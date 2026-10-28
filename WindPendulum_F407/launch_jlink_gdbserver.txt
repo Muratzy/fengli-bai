@@ -1,0 +1,9 @@
+J-Link debug setup for STM32CubeIDE:
+
+Debug probe: J-Link GDB Server
+Interface: SWD
+Target: STM32F407VE
+Speed: 4000 kHz (reduce if the board wiring is long)
+Serial observation: COM9, USART1 115200 8-N-1
+
+This is a setup note, not an auto-generated CubeIDE launch file. Select the J-Link GDB Server probe in the CubeIDE Debug Configurations dialog, because the copied course project launch file was for an ST-LINK/F103 target.

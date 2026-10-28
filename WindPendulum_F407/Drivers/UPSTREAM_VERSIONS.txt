@@ -1,0 +1,5 @@
+STM32CubeF4 repository: https://github.com/STMicroelectronics/STM32CubeF4
+HAL driver submodule: stm32f4xx_hal_driver, commit 1f6451c3e07728b4c830744de380e56bf5bc0026 (v1.8.5-12-g1f6451c)
+CMSIS device submodule: cmsis_device_f4, commit 9192c7b9df75a142f2027ab266601fe061fc00b3 (v2.6.11-3-g9192c7b)
+
+FreeRTOS Kernel: 202406.04 LTS release from the user-provided FreeRTOSv202406.04-LTS.zip archive.

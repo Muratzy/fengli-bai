@@ -1,0 +1,23 @@
+# STM32CubeIDE and local workspace metadata
+.cubeide-headless/
+**/.settings/
+
+# Generated build output
+WindPendulum_F407/build/
+WindPendulum_F407/Debug/
+WindPendulum_F407/Release/
+**/build/
+**/Debug/
+**/Release/
+
+# Local archives and tool output
+WindPendulum_F407.zip
+*.elf
+*.map
+*.list
+*.o
+*.d
+*.su
+*.cyclo
+*.bin
+*.hex
