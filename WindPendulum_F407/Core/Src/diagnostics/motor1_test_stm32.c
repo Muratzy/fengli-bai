@@ -4,6 +4,8 @@
 #include "app_config.h"
 #include "main.h"
 #include "queue.h"
+#include "services/current_sense.h"
+#include "services/voltage_sense.h"
 #include "task.h"
 #if APP_MOTOR1_STATUS_OLED_ENABLED
 #include "kk_oled.h"
@@ -14,15 +16,28 @@
 #define MOTOR1_TEST_PERIOD_MS 10U
 #define MOTOR1_TEST_LOG_MS   100U
 
+/* U1 is currently exposed as the ADC pin voltage; update the divider after
+ * the external sensing network is confirmed and calibrated. */
+static const VoltageSense_Config g_voltage_config = {
+    1U, 1U, 1000U, 0, 3U};
+static VoltageSense_State g_voltage_state;
+/* INA240A2: 50 V/V, two 10 mOhm shunts in parallel, grounded REF. */
+static const CurrentSense_Config g_current_config = {
+    50U, 5000U, 0U, 1000U, 3U};
+static CurrentSense_State g_current_state;
+
 typedef struct {
   uint32_t timestamp_ms;
   Motor1Test test;
   uint16_t current_adc;
+  CurrentSense_Result current;
+  VoltageSense_Result voltage;
   uint16_t ccr[4];
   uint8_t key_bits;
   uint8_t en_command;
   uint8_t en_pin;
   uint8_t adc_valid;
+  uint8_t voltage_valid;
   uint32_t step_gap_ms;
   uint32_t max_step_gap_ms;
 } Motor1Test_Snapshot;
@@ -32,9 +47,9 @@ static QueueHandle_t g_motor1_log_queue;
 static QueueHandle_t g_motor1_oled_queue;
 #endif
 static IWDG_HandleTypeDef g_motor1_watchdog;
-static const char *const g_motor1_state_names[] = {"RELEASE", "READY", "HOLD", "RUN"};
+static const char *const g_motor1_state_names[] = {"RELEASE", "READY", "FIXED", "RAMP"};
 static const char *const g_motor1_reason_names[] = {
-    "BOOT", "KEY_RELEASED", "STOP_KEY", "TIME_LIMIT", "LOOP_DELAY", "EN_LOW"};
+    "BOOT", "STOP_KEY", "LOOP_DELAY", "EN_LOW"};
 
 /* Visible in the debugger. Values report MCU commands, not measured speed. */
 volatile Motor1Test_Snapshot g_motor1_test_status;
@@ -57,25 +72,83 @@ static void Motor1Test_Apply(uint16_t duty_permille)
   HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_SET);
 }
 
-static uint16_t Motor1Test_ReadCurrent(uint8_t *valid)
+static bool Motor1Test_ReadAdcChannel(uint32_t adc_channel, uint16_t *value)
 {
   ADC_ChannelConfTypeDef channel = {0};
-  uint16_t adc = 0U;
-  channel.Channel = ADC_CHANNEL_8;
-  channel.Rank = 1;
-  channel.SamplingTime = ADC_SAMPLETIME_84CYCLES;
-  *valid = 0U;
-  if ((HAL_ADC_ConfigChannel(&hadc1, &channel) == HAL_OK) &&
-      (HAL_ADC_Start(&hadc1) == HAL_OK))
+  uint16_t sample = 0U;
+  bool valid = true;
+
+  if (value == NULL)
   {
-    if (HAL_ADC_PollForConversion(&hadc1, 1U) == HAL_OK)
-    {
-      adc = (uint16_t)HAL_ADC_GetValue(&hadc1);
-      *valid = 1U;
-    }
-    (void)HAL_ADC_Stop(&hadc1);
+    return false;
   }
-  return adc;
+  channel.Channel = adc_channel;
+  channel.Rank = 1U;
+  channel.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &channel) != HAL_OK)
+  {
+    valid = false;
+  }
+  else
+  {
+    /* Discard the first conversion after switching ADC channels. */
+    for (uint32_t conversion = 0U; conversion < 2U; ++conversion)
+    {
+      if (HAL_ADC_Start(&hadc1) != HAL_OK)
+      {
+        valid = false;
+        break;
+      }
+      if (HAL_ADC_PollForConversion(&hadc1, 2U) != HAL_OK)
+      {
+        valid = false;
+        (void)HAL_ADC_Stop(&hadc1);
+        break;
+      }
+      sample = (uint16_t)HAL_ADC_GetValue(&hadc1);
+      (void)HAL_ADC_Stop(&hadc1);
+    }
+  }
+  *value = valid ? sample : 0U;
+  return valid;
+}
+
+static void Motor1Test_ReadAnalog(Motor1Test_Snapshot *snapshot)
+{
+  VoltageSense_Result result = {0};
+  uint16_t vrefint_adc = 0U;
+  uint16_t voltage_adc = 0U;
+  /* Use an explicit board calibration or a clearly nominal reference. */
+  const uint16_t vrefint_cal_adc = (APP_ADC_VREFINT_CAL_RAW != 0U) ?
+      APP_ADC_VREFINT_CAL_RAW :
+      (uint16_t)((APP_ADC_VREFINT_NOMINAL_MV * 4095U + 1650U) / 3300U);
+  const bool vrefint_ok = Motor1Test_ReadAdcChannel(ADC_CHANNEL_VREFINT,
+                                                     &vrefint_adc);
+  const bool voltage_ok = Motor1Test_ReadAdcChannel(ADC_CHANNEL_9,
+                                                     &voltage_adc);
+  const bool current_ok = Motor1Test_ReadAdcChannel(ADC_CHANNEL_8,
+                                                     &snapshot->current_adc);
+
+  snapshot->voltage_valid = 0U;
+  if (vrefint_ok)
+  {
+    (void)VoltageSense_Update(&g_voltage_state, &g_voltage_config,
+                              voltage_ok ? voltage_adc : 4095U,
+                              vrefint_adc, vrefint_cal_adc,
+                              &result);
+  }
+  else
+  {
+    result.adc_raw = voltage_adc;
+    result.vrefint_raw = vrefint_adc;
+  }
+  result.adc_raw = voltage_adc;
+  snapshot->voltage = result;
+  snapshot->voltage_valid = voltage_ok ? result.valid : 0U;
+  snapshot->adc_valid = current_ok ? 1U : 0U;
+  (void)CurrentSense_Update(&g_current_state, &g_current_config,
+      snapshot->current_adc, result.vdda_mv,
+      current_ok && (result.reference_valid != 0U), &snapshot->current);
 }
 
 static void Motor1Test_Task(void *argument)
@@ -86,6 +159,8 @@ static void Motor1Test_Task(void *argument)
   TickType_t wake_time = xTaskGetTickCount();
   uint32_t log_time_ms = HAL_GetTick();
 
+  VoltageSense_Reset(&g_voltage_state);
+  CurrentSense_Reset(&g_current_state);
   Motor1Test_Apply(0U);
   Motor1Test_Init(&snapshot.test, log_time_ms);
   /* LSI tolerance applies: approximately 0.5 s at 32 kHz. */
@@ -102,23 +177,25 @@ static void Motor1Test_Task(void *argument)
   {
     uint32_t now_ms = HAL_GetTick();
     uint32_t keys = KEY1_GPIO_Port->IDR;
-    bool run_pressed = (keys & KEY1_Pin) == 0U;
-    bool stop_pressed = (keys & (KEY2_Pin | KEY3_Pin)) !=
-                        (KEY2_Pin | KEY3_Pin);
-    snapshot.key_bits = (run_pressed ? 1U : 0U) |
-                        ((keys & KEY2_Pin) == 0U ? 2U : 0U) |
-                        ((keys & KEY3_Pin) == 0U ? 4U : 0U);
+    bool fixed_pressed = (keys & KEY1_Pin) == 0U;
+    bool ramp_pressed = (keys & KEY2_Pin) == 0U;
+    bool stop_pressed = (keys & KEY3_Pin) == 0U;
+    snapshot.key_bits = (fixed_pressed ? 1U : 0U) |
+                        (ramp_pressed ? 2U : 0U) |
+                        (stop_pressed ? 4U : 0U);
     snapshot.step_gap_ms = now_ms - snapshot.test.last_step_ms;
     if (snapshot.step_gap_ms > snapshot.max_step_gap_ms)
     {
       snapshot.max_step_gap_ms = snapshot.step_gap_ms;
     }
-    Motor1Test_Step(&snapshot.test, now_ms, run_pressed, stop_pressed);
+    Motor1Test_Step(&snapshot.test, now_ms, fixed_pressed, ramp_pressed,
+                    stop_pressed);
     Motor1Test_Apply(snapshot.test.duty_permille);
     snapshot.en_command = 1U;
     snapshot.en_pin = (HAL_GPIO_ReadPin(MOTOR_ENABLE_GPIO_Port,
                        MOTOR_ENABLE_Pin) == GPIO_PIN_SET) ? 1U : 0U;
-    if ((snapshot.test.state == MOTOR1_TEST_RUNNING) &&
+    if (((snapshot.test.state == MOTOR1_TEST_FIXED) ||
+         (snapshot.test.state == MOTOR1_TEST_RAMP)) &&
         (snapshot.en_pin == 0U) &&
         (snapshot.test.run_elapsed_ms >= 50U))
     {
@@ -127,6 +204,7 @@ static void Motor1Test_Task(void *argument)
     }
 
     snapshot.timestamp_ms = now_ms;
+    Motor1Test_ReadAnalog(&snapshot);
     snapshot.ccr[0] = (uint16_t)__HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_1);
     snapshot.ccr[1] = (uint16_t)__HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_2);
     snapshot.ccr[2] = (uint16_t)__HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_3);
@@ -134,7 +212,6 @@ static void Motor1Test_Task(void *argument)
     if ((snapshot.test.state != previous_state) ||
         ((uint32_t)(now_ms - log_time_ms) >= MOTOR1_TEST_LOG_MS))
     {
-      snapshot.current_adc = Motor1Test_ReadCurrent(&snapshot.adc_valid);
       (void)xQueueOverwrite(g_motor1_log_queue, &snapshot);
       log_time_ms = now_ms;
     }
@@ -153,20 +230,26 @@ static void Motor1Test_LogTask(void *argument)
 {
   (void)argument;
   static const char banner[] =
-      "MOTOR1_BENCH,EN=HIGH,PE9=TIM1_CH1,20kHz,max=300permille,run=3000ms\r\n"
-      "KEY1=PC13,KEY2=PC0,KEY3=PC1. Hold KEY1 for 1s; release or KEY2/3 stops.\r\n"
+      "MOTOR1_BENCH,EN=HIGH,PE9=TIM1_CH1,20kHz,max=800permille\r\n"
+      "KEY1=PC13:30%; KEY2=PC0:20-80%,1%/100ms; KEY3=PC1:STOP. Latched.\r\n"
       "time_ms,state,reason,duty_permille,en_command,en_pin,ccr1,ccr2,ccr3,ccr4,"
-      "current_adc,adc_valid,keys,run_ms,step_gap_ms,max_step_gap_ms\r\n";
+      "current_adc,current_valid,voltage_adc,vrefint_adc,vdda_mv,u1_pin_mv,"
+      "u1_input_mv,u1_filtered_mv,voltage_valid,keys,run_ms,step_gap_ms,"
+      "max_step_gap_ms,current_ma,current_filtered_ma,current_calc_valid,"
+      "current_overrange,reference_calibrated\r\n";
   Motor1Test_Snapshot snapshot;
-  char line[192];
+  char line[320];
 
-  (void)HAL_UART_Transmit(&huart1, (uint8_t *)banner, sizeof(banner) - 1U, 50U);
+  (void)HAL_UART_Transmit(&huart1, (uint8_t *)banner, sizeof(banner) - 1U, 100U);
   for (;;)
   {
     if (xQueueReceive(g_motor1_log_queue, &snapshot, portMAX_DELAY) == pdPASS)
     {
       int length = snprintf(line, sizeof(line),
-          "%lu,%s,%s,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%lu,%lu,%lu\r\n",
+          "%lu,%s,%s,"
+          "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
+          "%lu,%lu,%lu,%lu,%u,%u,%lu,%lu,%lu,"
+          "%lu,%lu,%u,%u,%u\r\n",
           (unsigned long)snapshot.timestamp_ms,
           g_motor1_state_names[snapshot.test.state],
           g_motor1_reason_names[snapshot.test.stop_reason],
@@ -174,10 +257,22 @@ static void Motor1Test_LogTask(void *argument)
           (unsigned)snapshot.en_pin, (unsigned)snapshot.ccr[0],
           (unsigned)snapshot.ccr[1], (unsigned)snapshot.ccr[2],
           (unsigned)snapshot.ccr[3], (unsigned)snapshot.current_adc,
-          (unsigned)snapshot.adc_valid, (unsigned)snapshot.key_bits,
+          (unsigned)snapshot.adc_valid,
+          (unsigned)snapshot.voltage.adc_raw,
+          (unsigned)snapshot.voltage.vrefint_raw,
+          (unsigned long)snapshot.voltage.vdda_mv,
+          (unsigned long)snapshot.voltage.pin_mv,
+          (unsigned long)snapshot.voltage.input_mv,
+          (unsigned long)snapshot.voltage.filtered_mv,
+          (unsigned)snapshot.voltage_valid, (unsigned)snapshot.key_bits,
           (unsigned long)snapshot.test.run_elapsed_ms,
           (unsigned long)snapshot.step_gap_ms,
-          (unsigned long)snapshot.max_step_gap_ms);
+          (unsigned long)snapshot.max_step_gap_ms,
+          (unsigned long)snapshot.current.current_ma,
+          (unsigned long)snapshot.current.filtered_ma,
+          (unsigned)snapshot.current.valid,
+          (unsigned)snapshot.current.overrange,
+          (unsigned)(APP_ADC_VREFINT_CAL_RAW != 0U));
       if ((length > 0) && ((size_t)length < sizeof(line)))
       {
         (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 25U);
@@ -222,22 +317,52 @@ static void Motor1Test_OledTask(void *argument)
         (void)snprintf(line, sizeof(line), "MOTOR1 %s",
                        g_motor1_state_names[snapshot.test.state]);
         OLED_DrawUTF8(0, 0, line);
-        (void)snprintf(line, sizeof(line), "KEY1 PC13: %s",
-                       (snapshot.key_bits & 1U) != 0U ? "DOWN" : "UP");
-        OLED_DrawUTF8(0, 10, line);
+        (void)snprintf(line, sizeof(line), "K1:%u K2:%u K3:%u",
+                       (unsigned)(snapshot.key_bits & 1U),
+                       (unsigned)((snapshot.key_bits >> 1U) & 1U),
+                       (unsigned)((snapshot.key_bits >> 2U) & 1U));
+        OLED_DrawUTF8(0, 9, line);
         (void)snprintf(line, sizeof(line), "PWM1:%u.%u%% 20kHz",
                        (unsigned)(snapshot.test.duty_permille / 10U),
                        (unsigned)(snapshot.test.duty_permille % 10U));
-        OLED_DrawUTF8(0, 20, line);
-        (void)snprintf(line, sizeof(line), "CCR1:%u/%lu",
-                       (unsigned)snapshot.ccr[0], (unsigned long)htim1.Init.Period);
-        OLED_DrawUTF8(0, 30, line);
+        OLED_DrawUTF8(0, 18, line);
+        if (snapshot.voltage_valid != 0U)
+        {
+          (void)snprintf(line, sizeof(line), "C1:%u U1:%lu.%02luV",
+              (unsigned)snapshot.ccr[0],
+              (unsigned long)(snapshot.voltage.filtered_mv / 1000U),
+              (unsigned long)((snapshot.voltage.filtered_mv % 1000U) / 10U));
+        }
+        else
+        {
+          (void)snprintf(line, sizeof(line), "C1:%u U1:INVALID",
+                         (unsigned)snapshot.ccr[0]);
+        }
+        OLED_DrawUTF8(0, 27, line);
+        if (snapshot.adc_valid == 0U)
+        {
+          (void)snprintf(line, sizeof(line), "ADC:ERR I:--");
+        }
+        else if (snapshot.current.valid != 0U)
+        {
+          (void)snprintf(line, sizeof(line), "ADC:%u I:%lu.%03luA",
+              (unsigned)snapshot.current_adc,
+              (unsigned long)(snapshot.current.filtered_ma / 1000U),
+              (unsigned long)(snapshot.current.filtered_ma % 1000U));
+        }
+        else
+        {
+          (void)snprintf(line, sizeof(line), "ADC:%u I:%s",
+              (unsigned)snapshot.current_adc,
+              snapshot.current.overrange != 0U ? "CLIP" : "--");
+        }
+        OLED_DrawUTF8(0, 36, line);
         (void)snprintf(line, sizeof(line), "EN SET:%u READ:%u",
                        (unsigned)snapshot.en_command, (unsigned)snapshot.en_pin);
-        OLED_DrawUTF8(0, 40, line);
+        OLED_DrawUTF8(0, 45, line);
         (void)snprintf(line, sizeof(line), "STOP:%s",
                        g_motor1_reason_names[snapshot.test.stop_reason]);
-        OLED_DrawUTF8(0, 50, line);
+        OLED_DrawUTF8(0, 54, line);
         if (OLED_Update() != OLED_OK)
         {
           online = false;

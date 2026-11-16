@@ -1,8 +1,8 @@
 #MicroXplorer Configuration settings - do not modify
-ADC1.Channel-0\#ChannelRegularConversion=ADC_CHANNEL_8
+ADC1.Channel-0\#ChannelRegularConversion=ADC_CHANNEL_9
 ADC1.IPParameters=Channel-0\#ChannelRegularConversion,Rank-0\#ChannelRegularConversion,SamplingTime-0\#ChannelRegularConversion
 ADC1.Rank-0\#ChannelRegularConversion=1
-ADC1.SamplingTime-0\#ChannelRegularConversion=ADC_SAMPLETIME_84CYCLES
+ADC1.SamplingTime-0\#ChannelRegularConversion=ADC_SAMPLETIME_480CYCLES
 I2C1.ClockSpeed=100000
 I2C1.DutyCycle=I2C_DUTYCYCLE_2
 I2C1.IPParameters=ClockSpeed,DutyCycle

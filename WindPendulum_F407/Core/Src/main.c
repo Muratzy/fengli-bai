@@ -88,6 +88,8 @@ static void SystemClock_Config(void)
 
 static void MX_ADC1_Init(void)
 {
+  ADC_ChannelConfTypeDef channel = {0};
+
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -101,6 +103,12 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK) {
+    Error_Handler();
+  }
+  channel.Channel = ADC_CHANNEL_9;
+  channel.Rank = 1U;
+  channel.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &channel) != HAL_OK) {
     Error_Handler();
   }
 }

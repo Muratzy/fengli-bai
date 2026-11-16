@@ -9,6 +9,7 @@ void Motor1Test_Init(Motor1Test *test, uint32_t now_ms)
     *test = (Motor1Test){0};
     test->phase_started_ms = now_ms;
     test->last_step_ms = now_ms;
+    test->key_changed_ms = now_ms;
   }
 }
 
@@ -20,86 +21,102 @@ void Motor1Test_Stop(Motor1Test *test, uint32_t now_ms,
     test->state = MOTOR1_TEST_WAIT_RELEASE;
     test->stop_reason = reason;
     test->phase_started_ms = now_ms;
+    test->key_changed_ms = now_ms;
+    test->candidate_keys = 0U;
+    test->stable_keys = 0U;
     test->duty_permille = 0U;
   }
 }
 
 void Motor1Test_Step(Motor1Test *test, uint32_t now_ms,
-                    bool run_pressed, bool stop_pressed)
+                    bool fixed_pressed, bool ramp_pressed, bool stop_pressed)
 {
+  uint8_t keys;
+  uint8_t pressed_edges = 0U;
   uint32_t elapsed_ms;
 
   if (test == NULL)
   {
     return;
   }
-
-  test->duty_permille = 0U;
-  if ((test->state == MOTOR1_TEST_RUNNING) &&
-      ((uint32_t)(now_ms - test->last_step_ms) >
-       MOTOR1_TEST_MAX_STEP_GAP_MS))
+  if (((test->state == MOTOR1_TEST_FIXED) ||
+       (test->state == MOTOR1_TEST_RAMP)) &&
+      ((uint32_t)(now_ms - test->last_step_ms) > MOTOR1_TEST_MAX_STEP_GAP_MS))
   {
     Motor1Test_Stop(test, now_ms, MOTOR1_TEST_LOOP_DELAY);
   }
   test->last_step_ms = now_ms;
-
+  /* Stop takes priority over both start keys and their debounce. */
   if (stop_pressed)
   {
     Motor1Test_Stop(test, now_ms, MOTOR1_TEST_STOP_KEY);
     return;
   }
+  keys = (fixed_pressed ? 1U : 0U) | (ramp_pressed ? 2U : 0U);
+  if (test->state == MOTOR1_TEST_WAIT_RELEASE)
+  {
+    if (keys != 0U)
+    {
+      test->phase_started_ms = now_ms;
+    }
+    else if ((uint32_t)(now_ms - test->phase_started_ms) >=
+             MOTOR1_TEST_RELEASE_MS)
+    {
+      test->state = MOTOR1_TEST_READY;
+      test->candidate_keys = 0U;
+      test->stable_keys = 0U;
+      test->key_changed_ms = now_ms;
+    }
+    return;
+  }
+  if (keys != test->candidate_keys)
+  {
+    test->candidate_keys = keys;
+    test->key_changed_ms = now_ms;
+  }
+  else if ((uint32_t)(now_ms - test->key_changed_ms) >=
+           MOTOR1_TEST_DEBOUNCE_MS)
+  {
+    pressed_edges = keys & (uint8_t)~test->stable_keys;
+    test->stable_keys = keys;
+  }
+  /* Simultaneous start keys do not select a new mode. */
+  if ((keys == 1U) && ((pressed_edges & 1U) != 0U))
+  {
+    test->state = MOTOR1_TEST_FIXED;
+    test->phase_started_ms = now_ms;
+  }
+  else if ((keys == 2U) && ((pressed_edges & 2U) != 0U))
+  {
+    test->state = MOTOR1_TEST_RAMP;
+    test->phase_started_ms = now_ms;
+  }
 
   elapsed_ms = now_ms - test->phase_started_ms;
   switch (test->state)
   {
-    case MOTOR1_TEST_WAIT_RELEASE:
-      if (run_pressed)
-      {
-        test->phase_started_ms = now_ms;
-      }
-      else if (elapsed_ms >= MOTOR1_TEST_RELEASE_MS)
-      {
-        test->state = MOTOR1_TEST_READY;
-      }
-      break;
-
     case MOTOR1_TEST_READY:
-      if (run_pressed)
-      {
-        test->phase_started_ms = now_ms;
-        test->state = MOTOR1_TEST_HOLD;
-        test->run_elapsed_ms = 0U;
-      }
+      test->duty_permille = 0U;
       break;
 
-    case MOTOR1_TEST_HOLD:
-      if (!run_pressed)
-      {
-        Motor1Test_Stop(test, now_ms, MOTOR1_TEST_KEY_RELEASED);
-      }
-      else if (elapsed_ms >= MOTOR1_TEST_HOLD_MS)
-      {
-        test->state = MOTOR1_TEST_RUNNING;
-        test->phase_started_ms = now_ms;
-      }
-      break;
-
-    case MOTOR1_TEST_RUNNING:
+    case MOTOR1_TEST_FIXED:
       test->run_elapsed_ms = elapsed_ms;
-      if (!run_pressed)
+      test->duty_permille = MOTOR1_TEST_FIXED_DUTY;
+      break;
+
+    case MOTOR1_TEST_RAMP:
+      test->run_elapsed_ms = elapsed_ms;
+      if (elapsed_ms >= ((MOTOR1_TEST_MAX_DUTY -
+                          MOTOR1_TEST_RAMP_START_DUTY) /
+                         MOTOR1_TEST_RAMP_STEP_DUTY) * MOTOR1_TEST_RAMP_STEP_MS)
       {
-        Motor1Test_Stop(test, now_ms, MOTOR1_TEST_KEY_RELEASED);
-      }
-      else if (elapsed_ms >= MOTOR1_TEST_DURATION_MS)
-      {
-        Motor1Test_Stop(test, now_ms, MOTOR1_TEST_TIME_LIMIT);
+        test->duty_permille = MOTOR1_TEST_MAX_DUTY;
       }
       else
       {
-        test->duty_permille = (elapsed_ms >= MOTOR1_TEST_RAMP_MS) ?
-            MOTOR1_TEST_MAX_DUTY :
-            (uint16_t)((elapsed_ms * MOTOR1_TEST_MAX_DUTY) /
-                       MOTOR1_TEST_RAMP_MS);
+        test->duty_permille = MOTOR1_TEST_RAMP_START_DUTY +
+            (uint16_t)((elapsed_ms / MOTOR1_TEST_RAMP_STEP_MS) *
+                       MOTOR1_TEST_RAMP_STEP_DUTY);
       }
       break;
 

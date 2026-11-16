@@ -1,107 +1,107 @@
 #include "diagnostics/motor1_test.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 
-static uint32_t EnterRun(Motor1Test *test, uint32_t now_ms)
+static void Advance(Motor1Test *test, uint32_t *now, uint32_t duration,
+                    uint8_t keys)
 {
-  Motor1Test_Init(test, now_ms);
-  Motor1Test_Step(test, now_ms + 100U, false, false);
+  for (uint32_t elapsed = 0U; elapsed < duration; elapsed += 10U)
+  {
+    *now += 10U;
+    Motor1Test_Step(test, *now, (keys & 1U) != 0U,
+                    (keys & 2U) != 0U, (keys & 4U) != 0U);
+  }
+}
+
+static void Ready(Motor1Test *test, uint32_t *now)
+{
+  Motor1Test_Init(test, *now);
+  Advance(test, now, 100U, 0U);
   assert(test->state == MOTOR1_TEST_READY);
-  Motor1Test_Step(test, now_ms + 110U, true, false);
-  assert(test->state == MOTOR1_TEST_HOLD);
-  Motor1Test_Step(test, now_ms + 1109U, true, false);
-  assert(test->duty_permille == 0U);
-  Motor1Test_Step(test, now_ms + 1110U, true, false);
-  assert(test->state == MOTOR1_TEST_RUNNING);
-  assert(test->duty_permille == 0U);
-  return now_ms + 1110U;
 }
 
-static void TestHeldOnBootDoesNotStart(void)
+static void TestBootAndDebounce(void)
 {
   Motor1Test test;
-  Motor1Test_Init(&test, 0U);
-  for (uint32_t time = 0U; time <= 10000U; time += 10U)
-  {
-    Motor1Test_Step(&test, time, true, false);
-    assert(test.state == MOTOR1_TEST_WAIT_RELEASE);
-    assert(test.duty_permille == 0U);
-  }
-  Motor1Test_Step(&test, 10099U, false, false);
-  assert(test.state == MOTOR1_TEST_WAIT_RELEASE);
-  Motor1Test_Step(&test, 10100U, false, false);
+  uint32_t now = 0U;
+  Motor1Test_Init(&test, now);
+  Advance(&test, &now, 500U, 3U);
+  assert(test.state == MOTOR1_TEST_WAIT_RELEASE && test.duty_permille == 0U);
+  Advance(&test, &now, 100U, 0U);
   assert(test.state == MOTOR1_TEST_READY);
+  Advance(&test, &now, 20U, 1U);
+  Advance(&test, &now, 40U, 0U);
+  assert(test.duty_permille == 0U);
+  Advance(&test, &now, 30U, 1U);
+  assert(test.duty_permille == 0U);
+  Advance(&test, &now, 10U, 1U);
+  assert(test.state == MOTOR1_TEST_FIXED && test.duty_permille == 300U);
+  Advance(&test, &now, 10000U, 0U);
+  assert(test.state == MOTOR1_TEST_FIXED && test.duty_permille == 300U);
 }
 
-static void TestRampTimeoutAndReleaseToRestart(void)
+static void TestRamp(uint32_t initial_time)
 {
   Motor1Test test;
-  uint32_t start = EnterRun(&test, 0U);
-  uint16_t previous_duty = 0U;
-  for (uint32_t elapsed = 10U; elapsed < 3000U; elapsed += 10U)
+  uint32_t now = initial_time;
+  Ready(&test, &now);
+  Advance(&test, &now, 40U, 2U);
+  assert(test.state == MOTOR1_TEST_RAMP && test.duty_permille == 200U);
+  for (uint32_t elapsed = 10U; elapsed <= 8000U; elapsed += 10U)
   {
-    Motor1Test_Step(&test, start + elapsed, true, false);
-    assert(test.state == MOTOR1_TEST_RUNNING);
-    assert(test.duty_permille <= 300U);
-    assert(test.duty_permille >= previous_duty);
-    previous_duty = test.duty_permille;
-    if (elapsed >= 1000U)
-    {
-      assert(test.duty_permille == 300U);
-    }
-  }
-  Motor1Test_Step(&test, start + 3000U, true, false);
-  assert(test.duty_permille == 0U);
-  assert(test.stop_reason == MOTOR1_TEST_TIME_LIMIT);
-  for (uint32_t elapsed = 3010U; elapsed < 8000U; elapsed += 10U)
-  {
-    Motor1Test_Step(&test, start + elapsed, true, false);
-    assert(test.state == MOTOR1_TEST_WAIT_RELEASE);
-    assert(test.duty_permille == 0U);
+    uint16_t expected = (elapsed >= 6000U) ? 800U :
+                        200U + (uint16_t)((elapsed / 100U) * 10U);
+    /* Keeping KEY2 pressed must not continually restart the ramp. */
+    Advance(&test, &now, 10U, elapsed < 1000U ? 2U : 0U);
+    assert(test.state == MOTOR1_TEST_RAMP);
+    assert(test.duty_permille == expected);
   }
 }
 
-static void TestStopsAndMissedDeadline(void)
+static void TestStopAndSwitch(void)
 {
   Motor1Test test;
-  uint32_t start = EnterRun(&test, 100U);
-  Motor1Test_Step(&test, start + 10U, true, false);
-  assert(test.duty_permille > 0U);
-  Motor1Test_Step(&test, start + 20U, false, false);
+  uint32_t now = 0U;
+  Ready(&test, &now);
+  Advance(&test, &now, 40U, 3U);
   assert(test.duty_permille == 0U);
-  assert(test.stop_reason == MOTOR1_TEST_KEY_RELEASED);
-
-  start = EnterRun(&test, 5000U);
-  Motor1Test_Step(&test, start + 10U, true, false);
-  Motor1Test_Step(&test, start + 20U, true, true);
-  assert(test.duty_permille == 0U);
-  assert(test.stop_reason == MOTOR1_TEST_STOP_KEY);
-
-  start = EnterRun(&test, 10000U);
-  Motor1Test_Step(&test, start + 10U, true, false);
-  Motor1Test_Step(&test, start + 61U, true, false);
-  assert(test.duty_permille == 0U);
-  assert(test.stop_reason == MOTOR1_TEST_LOOP_DELAY);
-}
-
-static void TestMillisecondWraparound(void)
-{
-  Motor1Test test;
-  uint32_t start = EnterRun(&test, UINT32_MAX - 500U);
-  Motor1Test_Step(&test, start + 10U, true, false);
-  assert(test.state == MOTOR1_TEST_RUNNING);
-  assert(test.duty_permille == 3U);
-  Motor1Test_Step(&test, start + 20U, false, false);
-  assert(test.duty_permille == 0U);
+  Advance(&test, &now, 40U, 0U);
+  Advance(&test, &now, 40U, 1U);
+  Advance(&test, &now, 40U, 0U);
+  Advance(&test, &now, 40U, 2U);
+  assert(test.state == MOTOR1_TEST_RAMP && test.duty_permille == 200U);
+  Advance(&test, &now, 40U, 0U);
+  Advance(&test, &now, 40U, 1U);
+  assert(test.state == MOTOR1_TEST_FIXED && test.duty_permille == 300U);
+  Advance(&test, &now, 10U, 7U);
+  assert(test.duty_permille == 0U && test.stop_reason == MOTOR1_TEST_STOP_KEY);
+  Advance(&test, &now, 1000U, 1U);
+  assert(test.state == MOTOR1_TEST_WAIT_RELEASE && test.duty_permille == 0U);
+  Advance(&test, &now, 100U, 0U);
+  Advance(&test, &now, 40U, 2U);
+  assert(test.state == MOTOR1_TEST_RAMP);
+  now += 51U;
+  Motor1Test_Step(&test, now, false, true, false);
+  assert(test.duty_permille == 0U && test.stop_reason == MOTOR1_TEST_LOOP_DELAY);
+  Advance(&test, &now, 1000U, 2U);
+  assert(test.state == MOTOR1_TEST_WAIT_RELEASE);
+  Advance(&test, &now, 100U, 0U);
+  Advance(&test, &now, 40U, 1U);
+  Motor1Test_Stop(&test, now, MOTOR1_TEST_EN_LOW);
+  assert(test.duty_permille == 0U && test.stop_reason == MOTOR1_TEST_EN_LOW);
 }
 
 int main(void)
 {
-  TestHeldOnBootDoesNotStart();
-  TestRampTimeoutAndReleaseToRestart();
-  TestStopsAndMissedDeadline();
-  TestMillisecondWraparound();
-  puts("motor1 bench state tests passed");
+  TestBootAndDebounce();
+  TestRamp(0U);
+  TestRamp(UINT32_MAX - 200U);
+  TestStopAndSwitch();
+  Motor1Test_Init(NULL, 0U);
+  Motor1Test_Stop(NULL, 0U, MOTOR1_TEST_STOP_KEY);
+  Motor1Test_Step(NULL, 0U, false, false, false);
+  puts("motor1 button state tests passed");
   return 0;
 }
