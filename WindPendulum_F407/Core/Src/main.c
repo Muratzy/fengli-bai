@@ -2,6 +2,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "pendulum_app.h"
+#include "app_config.h"
+#include "diagnostics/motor1_test.h"
 
 ADC_HandleTypeDef hadc1;
 I2C_HandleTypeDef hi2c1;
@@ -26,12 +28,28 @@ int main(void)
   MX_GPIO_Init();
   MX_ADC1_Init();
   MX_I2C1_Init();
+#if !APP_OLED_ENABLED && \
+    !(APP_MOTOR1_TEST_ENABLED && APP_MOTOR1_STATUS_OLED_ENABLED)
+  {
+    const uint8_t display_off[] = {0x00U, 0xAEU};
+    (void)HAL_I2C_Master_Transmit(&hi2c1, 0x78U, (uint8_t *)display_off,
+                                 sizeof(display_off), 10U);
+  }
+#endif
   MX_SPI2_Init();
   MX_TIM1_Init();
+#if APP_MOTOR1_TEST_ENABLED
+  /* PWM is now at zero. Keep EN released high throughout normal bench use. */
+  HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_SET);
+#endif
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
 
+#if APP_MOTOR1_TEST_ENABLED
+  Motor1Test_CreateTasks();
+#else
   PendulumApp_CreateTasks();
+#endif
   vTaskStartScheduler();
 
   Error_Handler();
@@ -210,17 +228,19 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOD, BUZZER_Pin | MOTOR_ENABLE_Pin | LASER_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(IMU_CS_GPIO_Port, IMU_CS_Pin, GPIO_PIN_SET);
 
-  gpio.Pin = BUZZER_Pin | MOTOR_ENABLE_Pin | LASER_Pin;
+  gpio.Pin = BUZZER_Pin | LASER_Pin;
   gpio.Mode = GPIO_MODE_OUTPUT_PP;
   gpio.Pull = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &gpio);
 
-  gpio.Pin = MOTOR_FAULT_Pin;
-  gpio.Mode = GPIO_MODE_INPUT;
+  /* The motor board's 2N7002 can pull EN low: do not drive against it. */
+  gpio.Pin = MOTOR_ENABLE_Pin;
+  gpio.Mode = GPIO_MODE_OUTPUT_OD;
   gpio.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(MOTOR_FAULT_GPIO_Port, &gpio);
+  HAL_GPIO_Init(MOTOR_ENABLE_GPIO_Port, &gpio);
 
+#if !APP_MOTOR1_TEST_ENABLED
   gpio.Pin = IMU_INT1_Pin | IMU_INT2_Pin;
   gpio.Mode = GPIO_MODE_IT_FALLING;
   gpio.Pull = GPIO_NOPULL;
@@ -229,11 +249,12 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
   HAL_NVIC_SetPriority(EXTI1_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+#endif
 
-  gpio.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_13;
+  gpio.Pin = KEY1_Pin | KEY2_Pin | KEY3_Pin;
   gpio.Mode = GPIO_MODE_INPUT;
   gpio.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOC, &gpio);
+  HAL_GPIO_Init(KEY1_GPIO_Port, &gpio);
 
   gpio.Pin = IMU_CS_Pin;
   gpio.Mode = GPIO_MODE_OUTPUT_PP;
@@ -253,6 +274,9 @@ void Error_Handler(void)
 {
   __disable_irq();
   HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_RESET);
+  if (htim1.Instance == TIM1) {
+    __HAL_TIM_MOE_DISABLE(&htim1);
+  }
   for (;;) {
   }
 }

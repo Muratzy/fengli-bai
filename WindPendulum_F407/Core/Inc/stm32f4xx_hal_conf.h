@@ -8,6 +8,7 @@
 #define HAL_FLASH_MODULE_ENABLED
 #define HAL_GPIO_MODULE_ENABLED
 #define HAL_I2C_MODULE_ENABLED
+#define HAL_IWDG_MODULE_ENABLED
 #define HAL_PWR_MODULE_ENABLED
 #define HAL_RCC_MODULE_ENABLED
 #define HAL_SPI_MODULE_ENABLED
@@ -61,6 +62,9 @@
 #endif
 #ifdef HAL_I2C_MODULE_ENABLED
 #include "stm32f4xx_hal_i2c.h"
+#endif
+#ifdef HAL_IWDG_MODULE_ENABLED
+#include "stm32f4xx_hal_iwdg.h"
 #endif
 #ifdef HAL_PWR_MODULE_ENABLED
 #include "stm32f4xx_hal_pwr.h"

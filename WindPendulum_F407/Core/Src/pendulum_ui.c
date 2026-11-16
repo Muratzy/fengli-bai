@@ -263,13 +263,13 @@ void KK_UI_CustomOnDraw(KK_UI_PageId page, int16_t x_offset,
 static KK_UI_Input UI_ReadKeys(void)
 {
   KK_UI_Input input = {0};
-  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) {
+  if (HAL_GPIO_ReadPin(KEY2_GPIO_Port, KEY2_Pin) == GPIO_PIN_RESET) {
     input.keys |= KK_UI_KEY_UP;
   }
-  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_RESET) {
+  if (HAL_GPIO_ReadPin(KEY3_GPIO_Port, KEY3_Pin) == GPIO_PIN_RESET) {
     input.keys |= KK_UI_KEY_DOWN;
   }
-  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET) {
+  if (HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_RESET) {
     input.keys |= KK_UI_KEY_OK;
   }
   return input;

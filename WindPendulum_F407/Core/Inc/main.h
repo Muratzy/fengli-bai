@@ -7,14 +7,18 @@ extern "C" {
 
 #include "stm32f4xx_hal.h"
 
+#define KEY1_Pin GPIO_PIN_13
+#define KEY1_GPIO_Port GPIOC
+#define KEY2_Pin GPIO_PIN_0
+#define KEY2_GPIO_Port GPIOC
+#define KEY3_Pin GPIO_PIN_1
+#define KEY3_GPIO_Port GPIOC
 #define BUZZER_Pin GPIO_PIN_12
 #define BUZZER_GPIO_Port GPIOD
 #define MOTOR_ENABLE_Pin GPIO_PIN_7
 #define MOTOR_ENABLE_GPIO_Port GPIOD
 #define LASER_Pin GPIO_PIN_8
 #define LASER_GPIO_Port GPIOD
-#define MOTOR_FAULT_Pin GPIO_PIN_10
-#define MOTOR_FAULT_GPIO_Port GPIOD
 #define IMU_INT1_Pin GPIO_PIN_0
 #define IMU_INT1_GPIO_Port GPIOD
 #define IMU_INT2_Pin GPIO_PIN_1
