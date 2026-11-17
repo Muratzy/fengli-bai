@@ -23,7 +23,11 @@ static const VoltageSense_Config g_voltage_config = {
 static VoltageSense_State g_voltage_state;
 /* INA240A2: 50 V/V, two 10 mOhm shunts in parallel, grounded REF. */
 static const CurrentSense_Config g_current_config = {
-    50U, 5000U, 0U, 1000U, 3U};
+    .amplifier_gain = 50U,
+    .shunt_uohm = 5000U,
+    .zero_uv = APP_CURRENT_ZERO_UV,
+    .gain_permille = APP_CURRENT_GAIN_PERMILLE,
+    .filter_shift = 3U};
 static CurrentSense_State g_current_state;
 
 typedef struct {
@@ -72,13 +76,14 @@ static void Motor1Test_Apply(uint16_t duty_permille)
   HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_SET);
 }
 
-static bool Motor1Test_ReadAdcChannel(uint32_t adc_channel, uint16_t *value)
+static bool Motor1Test_ReadAdcSamples(uint32_t adc_channel, uint16_t *values,
+                                     uint16_t sample_count)
 {
   ADC_ChannelConfTypeDef channel = {0};
-  uint16_t sample = 0U;
   bool valid = true;
 
-  if (value == NULL)
+  if ((values == NULL) || (sample_count == 0U) ||
+      (sample_count > CURRENT_SENSE_MAX_SAMPLES))
   {
     return false;
   }
@@ -92,7 +97,7 @@ static bool Motor1Test_ReadAdcChannel(uint32_t adc_channel, uint16_t *value)
   else
   {
     /* Discard the first conversion after switching ADC channels. */
-    for (uint32_t conversion = 0U; conversion < 2U; ++conversion)
+    for (uint32_t conversion = 0U; conversion <= sample_count; ++conversion)
     {
       if (HAL_ADC_Start(&hadc1) != HAL_OK)
       {
@@ -105,12 +110,29 @@ static bool Motor1Test_ReadAdcChannel(uint32_t adc_channel, uint16_t *value)
         (void)HAL_ADC_Stop(&hadc1);
         break;
       }
-      sample = (uint16_t)HAL_ADC_GetValue(&hadc1);
-      (void)HAL_ADC_Stop(&hadc1);
+      const uint16_t sample = (uint16_t)HAL_ADC_GetValue(&hadc1);
+      if (conversion != 0U)
+      {
+        values[conversion - 1U] = sample;
+      }
+      if (HAL_ADC_Stop(&hadc1) != HAL_OK)
+      {
+        valid = false;
+        break;
+      }
     }
   }
-  *value = valid ? sample : 0U;
   return valid;
+}
+
+static bool Motor1Test_ReadAdcChannel(uint32_t adc_channel, uint16_t *value)
+{
+  if (value == NULL)
+  {
+    return false;
+  }
+  *value = 0U;
+  return Motor1Test_ReadAdcSamples(adc_channel, value, 1U);
 }
 
 static void Motor1Test_ReadAnalog(Motor1Test_Snapshot *snapshot)
@@ -118,6 +140,7 @@ static void Motor1Test_ReadAnalog(Motor1Test_Snapshot *snapshot)
   VoltageSense_Result result = {0};
   uint16_t vrefint_adc = 0U;
   uint16_t voltage_adc = 0U;
+  uint16_t current_samples[APP_CURRENT_SAMPLE_COUNT] = {0};
   /* Use an explicit board calibration or a clearly nominal reference. */
   const uint16_t vrefint_cal_adc = (APP_ADC_VREFINT_CAL_RAW != 0U) ?
       APP_ADC_VREFINT_CAL_RAW :
@@ -126,8 +149,12 @@ static void Motor1Test_ReadAnalog(Motor1Test_Snapshot *snapshot)
                                                      &vrefint_adc);
   const bool voltage_ok = Motor1Test_ReadAdcChannel(ADC_CHANNEL_9,
                                                      &voltage_adc);
-  const bool current_ok = Motor1Test_ReadAdcChannel(ADC_CHANNEL_8,
-                                                     &snapshot->current_adc);
+  const bool current_ok = Motor1Test_ReadAdcSamples(ADC_CHANNEL_8,
+      current_samples, APP_CURRENT_SAMPLE_COUNT);
+
+  /* Keep the 28-column protocol's current_adc as the latest raw code. */
+  snapshot->current_adc = current_ok ?
+      current_samples[APP_CURRENT_SAMPLE_COUNT - 1U] : 0U;
 
   snapshot->voltage_valid = 0U;
   if (vrefint_ok)
@@ -146,8 +173,8 @@ static void Motor1Test_ReadAnalog(Motor1Test_Snapshot *snapshot)
   snapshot->voltage = result;
   snapshot->voltage_valid = voltage_ok ? result.valid : 0U;
   snapshot->adc_valid = current_ok ? 1U : 0U;
-  (void)CurrentSense_Update(&g_current_state, &g_current_config,
-      snapshot->current_adc, result.vdda_mv,
+  (void)CurrentSense_UpdateSamples(&g_current_state, &g_current_config,
+      current_samples, APP_CURRENT_SAMPLE_COUNT, result.vdda_mv,
       current_ok && (result.reference_valid != 0U), &snapshot->current);
 }
 
