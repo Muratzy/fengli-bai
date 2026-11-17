@@ -21,3 +21,8 @@ WindPendulum_F407.zip
 *.cyclo
 *.bin
 *.hex
+
+# Generated PC telemetry sessions and Python cache
+WindPendulum_F407/数据记录/串口/
+**/__pycache__/
+*.py[cod]
