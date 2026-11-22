@@ -51,9 +51,9 @@ static QueueHandle_t g_motor1_log_queue;
 static QueueHandle_t g_motor1_oled_queue;
 #endif
 static IWDG_HandleTypeDef g_motor1_watchdog;
-static const char *const g_motor1_state_names[] = {"RELEASE", "READY", "FIXED", "RAMP"};
+static const char *const g_motor1_state_names[] = {"RELEASE", "READY", "AUTO", "RAMP"};
 static const char *const g_motor1_reason_names[] = {
-    "BOOT", "STOP_KEY", "LOOP_DELAY", "EN_LOW"};
+    "BOOT", "STOP_KEY", "LOOP_DELAY", "EN_LOW", "AUTO_DONE"};
 
 /* Visible in the debugger. Values report MCU commands, not measured speed. */
 volatile Motor1Test_Snapshot g_motor1_test_status;
@@ -66,11 +66,11 @@ static void Motor1Test_Apply(uint16_t duty_permille)
   {
     duty_permille = 0U;
   }
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0U);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0U);
   compare = ((htim1.Init.Period + 1U) * duty_permille) / 1000U;
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, compare);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0U);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0U);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, compare);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0U);
   HAL_GPIO_WritePin(LASER_GPIO_Port, LASER_Pin, GPIO_PIN_RESET);
   /* Normal stops use zero PWM; board protection can still pull EN low. */
   HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_SET);
@@ -204,10 +204,10 @@ static void Motor1Test_Task(void *argument)
   {
     uint32_t now_ms = HAL_GetTick();
     uint32_t keys = KEY1_GPIO_Port->IDR;
-    bool fixed_pressed = (keys & KEY1_Pin) == 0U;
+    bool auto_pressed = (keys & KEY1_Pin) == 0U;
     bool ramp_pressed = (keys & KEY2_Pin) == 0U;
     bool stop_pressed = (keys & KEY3_Pin) == 0U;
-    snapshot.key_bits = (fixed_pressed ? 1U : 0U) |
+    snapshot.key_bits = (auto_pressed ? 1U : 0U) |
                         (ramp_pressed ? 2U : 0U) |
                         (stop_pressed ? 4U : 0U);
     snapshot.step_gap_ms = now_ms - snapshot.test.last_step_ms;
@@ -215,13 +215,13 @@ static void Motor1Test_Task(void *argument)
     {
       snapshot.max_step_gap_ms = snapshot.step_gap_ms;
     }
-    Motor1Test_Step(&snapshot.test, now_ms, fixed_pressed, ramp_pressed,
+    Motor1Test_Step(&snapshot.test, now_ms, auto_pressed, ramp_pressed,
                     stop_pressed);
     Motor1Test_Apply(snapshot.test.duty_permille);
     snapshot.en_command = 1U;
     snapshot.en_pin = (HAL_GPIO_ReadPin(MOTOR_ENABLE_GPIO_Port,
                        MOTOR_ENABLE_Pin) == GPIO_PIN_SET) ? 1U : 0U;
-    if (((snapshot.test.state == MOTOR1_TEST_FIXED) ||
+    if (((snapshot.test.state == MOTOR1_TEST_AUTO) ||
          (snapshot.test.state == MOTOR1_TEST_RAMP)) &&
         (snapshot.en_pin == 0U) &&
         (snapshot.test.run_elapsed_ms >= 50U))
@@ -257,8 +257,8 @@ static void Motor1Test_LogTask(void *argument)
 {
   (void)argument;
   static const char banner[] =
-      "MOTOR1_BENCH,EN=HIGH,PE9=TIM1_CH1,20kHz,max=800permille\r\n"
-      "KEY1=PC13:30%; KEY2=PC0:20-80%,1%/100ms; KEY3=PC1:STOP. Latched.\r\n"
+      "MOTOR1_BENCH,EN=HIGH,PWM3=PE13=TIM1_CH3,20kHz,max=1000permille\r\n"
+      "KEY1=PC0:0-100%,1%/100ms,hold5s,auto-stop; KEY2=PC1:20-80%,1%/100ms; KEY3=PC13:STOP. Latched.\r\n"
       "time_ms,state,reason,duty_permille,en_command,en_pin,ccr1,ccr2,ccr3,ccr4,"
       "current_adc,current_valid,voltage_adc,vrefint_adc,vdda_mv,u1_pin_mv,"
       "u1_input_mv,u1_filtered_mv,voltage_valid,keys,run_ms,step_gap_ms,"
@@ -341,7 +341,7 @@ static void Motor1Test_OledTask(void *argument)
       if (online)
       {
         OLED_Clear();
-        (void)snprintf(line, sizeof(line), "MOTOR1 %s",
+        (void)snprintf(line, sizeof(line), "MOTOR3 %s",
                        g_motor1_state_names[snapshot.test.state]);
         OLED_DrawUTF8(0, 0, line);
         (void)snprintf(line, sizeof(line), "K1:%u K2:%u K3:%u",
@@ -349,21 +349,21 @@ static void Motor1Test_OledTask(void *argument)
                        (unsigned)((snapshot.key_bits >> 1U) & 1U),
                        (unsigned)((snapshot.key_bits >> 2U) & 1U));
         OLED_DrawUTF8(0, 9, line);
-        (void)snprintf(line, sizeof(line), "PWM1:%u.%u%% 20kHz",
+        (void)snprintf(line, sizeof(line), "PWM3:%u.%u%% 20kHz",
                        (unsigned)(snapshot.test.duty_permille / 10U),
                        (unsigned)(snapshot.test.duty_permille % 10U));
         OLED_DrawUTF8(0, 18, line);
         if (snapshot.voltage_valid != 0U)
         {
-          (void)snprintf(line, sizeof(line), "C1:%u U1:%lu.%02luV",
-              (unsigned)snapshot.ccr[0],
+          (void)snprintf(line, sizeof(line), "C3:%u U1:%lu.%02luV",
+              (unsigned)snapshot.ccr[2],
               (unsigned long)(snapshot.voltage.filtered_mv / 1000U),
               (unsigned long)((snapshot.voltage.filtered_mv % 1000U) / 10U));
         }
         else
         {
-          (void)snprintf(line, sizeof(line), "C1:%u U1:INVALID",
-                         (unsigned)snapshot.ccr[0]);
+          (void)snprintf(line, sizeof(line), "C3:%u U1:INVALID",
+                         (unsigned)snapshot.ccr[2]);
         }
         OLED_DrawUTF8(0, 27, line);
         if (snapshot.adc_valid == 0U)

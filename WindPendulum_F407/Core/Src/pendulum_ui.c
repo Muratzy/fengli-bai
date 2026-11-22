@@ -32,7 +32,7 @@ static int32_t g_contrast = 128;
 static const KK_UI_MenuItem root_items[] = {
     {"Live Status", KK_UI_MENU_PAGE, UI_PAGE_STATUS},
     {"IMU Data", KK_UI_MENU_PAGE, UI_PAGE_SENSORS},
-    {"Calibration", KK_UI_MENU_PAGE, UI_PAGE_CALIBRATION},
+    {"Gyro Offsets", KK_UI_MENU_PAGE, UI_PAGE_CALIBRATION},
     {"Display", KK_UI_MENU_PAGE, UI_PAGE_DISPLAY},
     {"About", KK_UI_MENU_PAGE, UI_PAGE_ABOUT}
 };
@@ -140,7 +140,7 @@ static const char *UI_ModeText(void)
   if (g_display_state.imu_online == 0U) {
     return "IMU FAULT";
   }
-  return (g_display_state.calibrated != 0U) ? "READY" : "CALIBRATING";
+  return (g_display_state.calibrated != 0U) ? "READY" : "INITIALIZING";
 }
 
 void KK_UI_CustomOnEnter(KK_UI_PageId page)
@@ -187,14 +187,7 @@ void KK_UI_CustomOnDraw(KK_UI_PageId page, int16_t x_offset,
     OLED_DrawUTF8(x, 33, line);
     UI_FormatTenths(line, sizeof(line), "PITCH: ", data->pitch_deg);
     OLED_DrawUTF8(x, 43, line);
-    if (g_display_state.calibrated != 0U) {
-      (void)snprintf(line, sizeof(line), "CAL: COMPLETE");
-    } else if (g_display_state.calibration_samples == 0U) {
-      (void)snprintf(line, sizeof(line), "CAL: HOLD STILL");
-    } else {
-      (void)snprintf(line, sizeof(line), "CAL: %lu/5000",
-                     (unsigned long)g_display_state.calibration_samples);
-    }
+    (void)snprintf(line, sizeof(line), "GYRO: FIXED OFFSETS");
     OLED_DrawUTF8(x, 53, line);
   } else if (page == 1U) {
     UI_DrawHeader("ATTITUDE");
@@ -236,17 +229,10 @@ void KK_UI_CustomOnDraw(KK_UI_PageId page, int16_t x_offset,
                    (long)data->imu.temperature_c);
     OLED_DrawUTF8(x, 53, line);
   } else {
-    UI_DrawHeader("STARTUP CALIBRATION");
-    if (g_display_state.calibrated != 0U) {
-      (void)snprintf(line, sizeof(line), "COMPLETE");
-    } else if (g_display_state.calibration_samples == 0U) {
-      (void)snprintf(line, sizeof(line), "HOLD STILL");
-    } else {
-      (void)snprintf(line, sizeof(line), "CALIBRATING");
-    }
+    UI_DrawHeader("FIXED GYRO OFFSETS");
+    (void)snprintf(line, sizeof(line), "MODE: %s", UI_ModeText());
     OLED_DrawUTF8(x, 15, line);
-    (void)snprintf(line, sizeof(line), "SAMPLES %lu/5000",
-                   (unsigned long)g_display_state.calibration_samples);
+    (void)snprintf(line, sizeof(line), "NO STARTUP CALIBRATION");
     OLED_DrawUTF8(x, 27, line);
     for (uint32_t axis = 0U; axis < 3U; ++axis) {
       const char *name = (axis == 0U) ? "X" : (axis == 1U) ? "Y" : "Z";
@@ -254,8 +240,7 @@ void KK_UI_CustomOnDraw(KK_UI_PageId page, int16_t x_offset,
                       g_display_state.gyro_bias_dps[axis]);
       OLED_DrawUTF8((int16_t)(x + axis * 39U), 39, line);
     }
-    KK_UI_DrawProgressBar(x, 53, 120U, 8U,
-                          g_display_state.calibration_samples, 5000U);
+    OLED_DrawUTF8(x, 53, "OFFSETS IN DEG/S");
   }
   OLED_ResetClipWindow();
 }

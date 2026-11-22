@@ -25,11 +25,12 @@ void Motor1Test_Stop(Motor1Test *test, uint32_t now_ms,
     test->candidate_keys = 0U;
     test->stable_keys = 0U;
     test->duty_permille = 0U;
+    test->full_duty_reached = false;
   }
 }
 
 void Motor1Test_Step(Motor1Test *test, uint32_t now_ms,
-                    bool fixed_pressed, bool ramp_pressed, bool stop_pressed)
+                    bool auto_pressed, bool ramp_pressed, bool stop_pressed)
 {
   uint8_t keys;
   uint8_t pressed_edges = 0U;
@@ -39,7 +40,7 @@ void Motor1Test_Step(Motor1Test *test, uint32_t now_ms,
   {
     return;
   }
-  if (((test->state == MOTOR1_TEST_FIXED) ||
+  if (((test->state == MOTOR1_TEST_AUTO) ||
        (test->state == MOTOR1_TEST_RAMP)) &&
       ((uint32_t)(now_ms - test->last_step_ms) > MOTOR1_TEST_MAX_STEP_GAP_MS))
   {
@@ -52,7 +53,7 @@ void Motor1Test_Step(Motor1Test *test, uint32_t now_ms,
     Motor1Test_Stop(test, now_ms, MOTOR1_TEST_STOP_KEY);
     return;
   }
-  keys = (fixed_pressed ? 1U : 0U) | (ramp_pressed ? 2U : 0U);
+  keys = (auto_pressed ? 1U : 0U) | (ramp_pressed ? 2U : 0U);
   if (test->state == MOTOR1_TEST_WAIT_RELEASE)
   {
     if (keys != 0U)
@@ -83,8 +84,9 @@ void Motor1Test_Step(Motor1Test *test, uint32_t now_ms,
   /* Simultaneous start keys do not select a new mode. */
   if ((keys == 1U) && ((pressed_edges & 1U) != 0U))
   {
-    test->state = MOTOR1_TEST_FIXED;
+    test->state = MOTOR1_TEST_AUTO;
     test->phase_started_ms = now_ms;
+    test->full_duty_reached = false;
   }
   else if ((keys == 2U) && ((pressed_edges & 2U) != 0U))
   {
@@ -99,18 +101,41 @@ void Motor1Test_Step(Motor1Test *test, uint32_t now_ms,
       test->duty_permille = 0U;
       break;
 
-    case MOTOR1_TEST_FIXED:
+    case MOTOR1_TEST_AUTO:
       test->run_elapsed_ms = elapsed_ms;
-      test->duty_permille = MOTOR1_TEST_FIXED_DUTY;
+      if (test->full_duty_reached)
+      {
+        if ((uint32_t)(now_ms - test->full_duty_started_ms) >=
+            MOTOR1_TEST_AUTO_HOLD_MS)
+        {
+          Motor1Test_Stop(test, now_ms, MOTOR1_TEST_AUTO_DONE);
+        }
+        else
+        {
+          test->duty_permille = MOTOR1_TEST_MAX_DUTY;
+        }
+      }
+      else if (elapsed_ms >= MOTOR1_TEST_AUTO_RAMP_MS)
+      {
+        test->duty_permille = MOTOR1_TEST_MAX_DUTY;
+        /* Count the hold from the step that first commands full duty. */
+        test->full_duty_started_ms = now_ms;
+        test->full_duty_reached = true;
+      }
+      else
+      {
+        test->duty_permille = (uint16_t)((elapsed_ms /
+            MOTOR1_TEST_RAMP_STEP_MS) * MOTOR1_TEST_RAMP_STEP_DUTY);
+      }
       break;
 
     case MOTOR1_TEST_RAMP:
       test->run_elapsed_ms = elapsed_ms;
-      if (elapsed_ms >= ((MOTOR1_TEST_MAX_DUTY -
+      if (elapsed_ms >= ((MOTOR1_TEST_RAMP_MAX_DUTY -
                           MOTOR1_TEST_RAMP_START_DUTY) /
                          MOTOR1_TEST_RAMP_STEP_DUTY) * MOTOR1_TEST_RAMP_STEP_MS)
       {
-        test->duty_permille = MOTOR1_TEST_MAX_DUTY;
+        test->duty_permille = MOTOR1_TEST_RAMP_MAX_DUTY;
       }
       else
       {

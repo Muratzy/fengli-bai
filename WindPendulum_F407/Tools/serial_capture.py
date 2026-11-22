@@ -47,8 +47,8 @@ PROTOCOL_FIELDS = [
     "reference_calibrated",
 ]
 EXPECTED_HEADER = ",".join(PROTOCOL_FIELDS)
-STATES = {"RELEASE", "READY", "FIXED", "RAMP"}
-REASONS = {"BOOT", "STOP_KEY", "LOOP_DELAY", "EN_LOW"}
+STATES = {"RELEASE", "READY", "FIXED", "AUTO", "RAMP"}
+REASONS = {"BOOT", "STOP_KEY", "LOOP_DELAY", "EN_LOW", "AUTO_DONE"}
 UINT32_MAX = 0xFFFFFFFF
 
 HOST_FIELDS = [
@@ -73,9 +73,9 @@ CSV_FIELDS = HOST_FIELDS + PROTOCOL_FIELDS + DERIVED_FIELDS
 
 FIELD_DESCRIPTIONS = {
     "time_ms": ("ms", "板端 uint32 启动计时，约 49.7 天回绕"),
-    "state": ("enum", "电机测试状态 RELEASE / READY / FIXED / RAMP"),
-    "reason": ("enum", "最近一次停止原因；BOOT 不代表每行都在复位"),
-    "duty_permille": ("permille", "PWM 指令千分比 0~800；不是实际转速"),
+    "state": ("enum", "电机测试状态 RELEASE / READY / AUTO / RAMP；兼容旧版 FIXED"),
+    "reason": ("enum", "最近一次停止原因；AUTO_DONE 表示 K1 满占空比保持结束；BOOT 不代表每行都在复位"),
+    "duty_permille": ("permille", "PWM 指令千分比 0~1000；不是实际转速"),
     "en_command": ("bool", "EN 软件命令，1 表示释放开漏输出"),
     "en_pin": ("bool", "PD7 实际输入电平，不证明驱动输出正常"),
     "ccr1": ("count", "TIM1_CH1 比较值，当前 ARR=8399"),
@@ -91,7 +91,7 @@ FIELD_DESCRIPTIONS = {
     "u1_input_mv": ("mV", "按配置比例折算的 U1 电压；当前未验证为母线电压"),
     "u1_filtered_mv": ("mV", "U1 滤波电压，仍需结合 voltage_valid"),
     "voltage_valid": ("bool", "电压采样及换算有效标志"),
-    "keys": ("bitmask", "bit0=KEY1/PC13，bit1=KEY2/PC0，bit2=KEY3/PC1；1 为按下"),
+    "keys": ("bitmask", "bit0=丝印KEY1/PC0，bit1=丝印KEY2/PC1，bit2=丝印KEY3/PC13；1 为按下"),
     "run_ms": ("ms", "电机测试运行时间"),
     "step_gap_ms": ("ms", "电机任务相邻步进间隔"),
     "max_step_gap_ms": ("ms", "本次 MCU 启动以来最大步进间隔"),
@@ -111,9 +111,9 @@ FIELD_DESCRIPTIONS = {
     "duty_percent": ("%", "duty_permille/10；数值 30.0 表示 30%"),
     "current_a": ("A", "current_filtered_ma/1000；采样/换算无效或超量程时留空"),
     "voltage_v": ("V", "u1_filtered_mv/1000；电压无效时留空"),
-    "key1_pressed": ("bool", "KEY1/PC13 按下状态"),
-    "key2_pressed": ("bool", "KEY2/PC0 按下状态"),
-    "key3_pressed": ("bool", "KEY3/PC1 按下状态"),
+    "key1_pressed": ("bool", "丝印KEY1/PC0 按下状态"),
+    "key2_pressed": ("bool", "丝印KEY2/PC1 按下状态"),
+    "key3_pressed": ("bool", "丝印KEY3/PC13 按下状态"),
 }
 
 
@@ -147,11 +147,11 @@ def validate_protocol_row(values: Sequence[str]) -> Dict[str, object]:
         raise ValueError("unknown state %r" % values[1])
     if values[2] not in REASONS:
         raise ValueError("unknown reason %r" % values[2])
-    row["duty_permille"] = parse_int(values[3], "duty_permille", 0, 800)
+    row["duty_permille"] = parse_int(values[3], "duty_permille", 0, 1000)
     for name in ("en_command", "en_pin"):
         row[name] = parse_int(str(row[name]), name, 0, 1)
     for name in ("ccr1", "ccr2", "ccr3", "ccr4"):
-        row[name] = parse_int(str(row[name]), name, 0, 8399)
+        row[name] = parse_int(str(row[name]), name, 0, 8400)
     for name in ("current_adc", "voltage_adc", "vrefint_adc"):
         row[name] = parse_int(str(row[name]), name, 0, 4095)
     for name in (

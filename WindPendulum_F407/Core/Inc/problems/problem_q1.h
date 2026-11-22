@@ -25,11 +25,13 @@ typedef enum {
 } ProblemQ1_Result;
 
 typedef struct {
-  float line_length_m;
-  float effective_length_m;
+  float line_length_m; /* Full ground trace span: -length/2 .. +length/2. */
+  float ground_height_m; /* Pivot-to-ground height; coaxial laser assumed. */
   float max_angle_deg;
-  float direction_sign;
-  uint32_t duration_ms;
+  float direction_sign; /* +1 starts toward right/up; -1 toward left/down. */
+  uint32_t swing_period_ms; /* One complete oscillation, independent of deadline. */
+  uint32_t startup_ramp_ms; /* Smooth amplitude growth from rest. */
+  uint32_t duration_ms; /* Observation window; completion is not a pass verdict. */
   ProblemQ1_Axis axis;
 } ProblemQ1_Config;
 
@@ -47,6 +49,9 @@ typedef struct {
   ProblemQ1_State state;
 } ProblemQ1;
 
+/* Measured dimensions, left/right (Pitch), nominal simple-pendulum period.
+ * The center distance estimates period only; verify physical period on bench. */
+ProblemQ1_Config ProblemQ1_DefaultConfig(void);
 bool ProblemQ1_Validate(const ProblemQ1_Config *config);
 ProblemQ1_Result ProblemQ1_Start(ProblemQ1 *problem,
                                  const ProblemQ1_Config *config,

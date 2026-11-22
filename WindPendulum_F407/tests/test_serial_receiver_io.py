@@ -101,11 +101,31 @@ class ReceiverIOTests(unittest.TestCase):
         self.assertEqual(serial_capture.enrich_row(parsed, 1, "test", 0, 1)["voltage_v"], "")
 
     def test_ranges_and_enums_are_checked(self):
-        for index, bad in [(0, "4294967296"), (1, "NEWSTATE"), (3, "801"),
-                           (4, "2"), (6, "8400"), (10, "4096"), (19, "8"), (23, "-1")]:
+        for index, bad in [(0, "4294967296"), (1, "NEWSTATE"), (3, "1001"),
+                           (4, "2"), (6, "8401"), (10, "4096"), (19, "8"), (23, "-1")]:
             values = ROW.split(",")
             values[index] = bad
             self.assertEqual(serial_capture.TelemetryParser().process_line(",".join(values).encode())[0], "invalid_row")
+
+    def test_auto_full_duty_and_completion_are_accepted(self):
+        values = ROW.split(",")
+        values[1] = "AUTO"
+        values[3] = "1000"
+        values[6] = "8400"
+        kind, parsed = serial_capture.TelemetryParser().process_line(
+            ",".join(values).encode())
+        self.assertEqual(kind, "row")
+        self.assertEqual(parsed["protocol"]["ccr1"], 8400)
+        self.assertEqual(serial_capture.enrich_row(parsed, 1, "test", 0, 1)["duty_percent"], "100.0")
+        values[1], values[2], values[3], values[6] = "RELEASE", "AUTO_DONE", "0", "0"
+        kind, parsed = serial_capture.TelemetryParser().process_line(
+            ",".join(values).encode())
+        self.assertEqual(kind, "row")
+        self.assertEqual(parsed["protocol"]["reason"], "AUTO_DONE")
+        # Old captures with the original fixed-duty state remain readable.
+        values[1], values[2] = "FIXED", "BOOT"
+        self.assertEqual(serial_capture.TelemetryParser().process_line(
+            ",".join(values).encode())[0], "row")
 
     def test_timestamp_gap_and_boot_banner(self):
         parser = serial_capture.TelemetryParser()

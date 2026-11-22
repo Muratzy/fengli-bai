@@ -3,7 +3,7 @@
 
 /* Select one output owner. The bench image never starts a competition task. */
 #ifndef APP_MOTOR1_TEST_ENABLED
-#define APP_MOTOR1_TEST_ENABLED 1
+#define APP_MOTOR1_TEST_ENABLED 0
 #endif
 
 #ifndef APP_OLED_ENABLED
@@ -17,6 +17,44 @@
 
 #define APP_MOTOR1_OLED_PERIOD_MS 100U
 
+/* Fixed gyro offsets in sensor axes, deg/s. Measured while stationary on
+ * 2026-11-23; startup no longer collects a new calibration batch. */
+#define APP_IMU_GYRO_BIAS_X_DPS  0.31284F
+#define APP_IMU_GYRO_BIAS_Y_DPS -0.08947F
+#define APP_IMU_GYRO_BIAS_Z_DPS  0.12095F
+
+/* Sensor-to-pendulum rotation fitted from center/up/right/down/left poses.
+ * Rows are right, up and the center gravity direction; right x up = normal. */
+#define APP_IMU_FRAME_RIGHT  {0.64941527F, -0.75831454F, 0.05673503F}
+#define APP_IMU_FRAME_UP     {-0.76034698F, -0.64865960F, 0.03336445F}
+#define APP_IMU_FRAME_NORMAL {0.01150097F, -0.06480569F, -0.99783162F}
+
+/* Measured geometry, meters. The laser is coaxial with the pendulum rod.
+ * Ground projection uses pivot height, not pivot-to-pendulum-center length. */
+#define APP_PIVOT_GROUND_HEIGHT_M     0.99F
+#define APP_PIVOT_PENDULUM_CENTER_M   0.67F
+#define APP_Q1_LINE_LENGTH_M          0.50F
+#define APP_Q1_DURATION_MS           15000U
+#define APP_Q1_TURN_RATE_DPS             2.0F
+#define APP_Q1_STOP_PITCH_DEG           25.0F
+#define APP_Q1_STOP_ROLL_DEG             8.0F
+#define APP_Q1_TELEMETRY_PERIOD_MS      20U
+#define APP_Q1_START_ANGLE_DEG           7.0F
+#define APP_Q1_PWM_START_PERMILLE        0U
+#define APP_Q1_PWM_MAX_PERMILLE       1000U
+#define APP_Q1_PWM_RISE_MS             500U
+#define APP_Q1_PWM_FALL_MS             200U
+
+#if (APP_Q1_PWM_START_PERMILLE >= APP_Q1_PWM_MAX_PERMILLE) || \
+    (APP_Q1_PWM_MAX_PERMILLE > 1000U)
+#error "Q1 PWM requires 0 <= start < maximum <= 1000 permille."
+#endif
+
+#if (APP_Q1_PWM_RISE_MS < 1U) || (APP_Q1_PWM_RISE_MS > 2000U) || \
+    (APP_Q1_PWM_FALL_MS < 1U) || (APP_Q1_PWM_FALL_MS > 2000U)
+#error "Q1 PWM ramp times must be 1..2000 ms."
+#endif
+
 /* User calibration: VREFINT raw code normalized to VDDA=3300 mV.
  * Zero selects a nominal 1.210 V estimate, not a factory calibration claim. */
 #define APP_ADC_VREFINT_CAL_RAW 0U
@@ -26,7 +64,7 @@
  * not the Arduino library's ADC-reference/2 default. */
 #define APP_CURRENT_SAMPLE_COUNT 8U
 #define APP_CURRENT_ZERO_UV 0U
-#define APP_CURRENT_GAIN_PERMILLE 1000U
+#define APP_CURRENT_GAIN_PERMILLE 100U
 
 #if (APP_CURRENT_SAMPLE_COUNT < 1U) || (APP_CURRENT_SAMPLE_COUNT > 250U)
 #error "Current ADC averaging requires 1..250 samples."

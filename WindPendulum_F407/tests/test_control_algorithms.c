@@ -71,13 +71,10 @@ static void TestPidAntiWindupAndLimits(void)
 
 static ProblemQ1_Config MakeQ1Config(void)
 {
-  ProblemQ1_Config config = {
-      .line_length_m = 0.50F,
-      .effective_length_m = 0.70F,
-      .max_angle_deg = 45.0F,
-      .direction_sign = 1.0F,
-      .duration_ms = 15000U,
-      .axis = PROBLEM_Q1_AXIS_ROLL};
+  ProblemQ1_Config config = ProblemQ1_DefaultConfig();
+  /* Round timing for exact phase and derivative checks. */
+  config.swing_period_ms = 2000U;
+  config.startup_ramp_ms = 4000U;
   return config;
 }
 
@@ -96,17 +93,86 @@ static void TestQ1TrajectoryAndPreconditions(void)
   assert(ProblemQ1_Step(&problem, 100U, &output));
   assert(fabsf(output.target_position_m) < 0.001F);
   assert(fabsf(output.target_velocity_mps) < 0.001F);
-  assert(ProblemQ1_Step(&problem, 3850U, &output));
-  assert(fabsf(output.target_position_m - 0.25F) < 0.002F);
-  assert(ProblemQ1_Step(&problem, 7600U, &output));
-  assert(fabsf(output.target_position_m - 0.50F) < 0.002F);
-  assert(fabsf(output.target_roll_deg - 35.54F) < 0.1F);
-  assert(ProblemQ1_Step(&problem, 11350U, &output));
+  assert(ProblemQ1_Step(&problem, 4600U, &output));
+  assert(fabsf(output.target_position_m - 0.25F) < 0.0001F);
+  assert(fabsf(output.target_pitch_deg - 14.17234F) < 0.001F);
+  assert(fabsf(output.target_roll_deg) < 0.0001F);
+  assert(fabsf(output.target_velocity_mps) < 0.0001F);
+  assert(ProblemQ1_Step(&problem, 5600U, &output));
+  assert(fabsf(output.target_position_m + 0.25F) < 0.0001F);
+  assert(fabsf(output.target_pitch_deg + 14.17234F) < 0.001F);
+  assert(ProblemQ1_Step(&problem, 5100U, &output));
+  assert(fabsf(output.target_position_m) < 0.0001F);
   assert(output.target_velocity_mps < 0.0F);
   assert(ProblemQ1_Step(&problem, 15100U, &output));
   assert(output.complete);
   assert(problem.state == PROBLEM_Q1_COMPLETE);
   assert(fabsf(output.target_position_m) < 0.001F);
+}
+
+static void TestQ1MeasuredGeometryAndValidation(void)
+{
+  ProblemQ1_Config config = ProblemQ1_DefaultConfig();
+  ProblemQ1 problem = {0};
+  ProblemQ1_Output output;
+  assert(config.swing_period_ms == 1642U);
+  assert(config.startup_ramp_ms == 3284U);
+  assert(config.axis == PROBLEM_Q1_AXIS_PITCH);
+  assert(ProblemQ1_Validate(&config));
+  /* A 50 cm trace is +/-25 cm, not 50 cm to one side. */
+  config.max_angle_deg = 14.0F;
+  assert(!ProblemQ1_Validate(&config));
+  config.max_angle_deg = 14.2F;
+  assert(ProblemQ1_Validate(&config));
+  float left = 0.0F;
+  float right = 0.0F;
+  assert(ProblemQ1_Start(&problem, &config, UINT32_MAX - 500U, true, true) == PROBLEM_Q1_OK);
+  for (uint32_t elapsed = 0U; elapsed < config.duration_ms; elapsed += 10U)
+  {
+    assert(ProblemQ1_Step(&problem, (UINT32_MAX - 500U) + elapsed, &output));
+    assert(isfinite(output.target_velocity_mps));
+    assert(fabsf(output.target_pitch_deg) <= 14.173F);
+    assert(fabsf(output.target_roll_deg) < 0.0001F);
+    if (output.target_position_m < left) left = output.target_position_m;
+    if (output.target_position_m > right) right = output.target_position_m;
+  }
+  assert(left < -0.249F && right > 0.249F);
+  config.ground_height_m = 0.0F;
+  assert(!ProblemQ1_Validate(&config));
+  config = ProblemQ1_DefaultConfig();
+  config.ground_height_m = NAN;
+  assert(!ProblemQ1_Validate(&config));
+  config = ProblemQ1_DefaultConfig();
+  config.swing_period_ms = 0U;
+  assert(!ProblemQ1_Validate(&config));
+  config = ProblemQ1_DefaultConfig();
+  config.startup_ramp_ms = 0U;
+  assert(!ProblemQ1_Validate(&config));
+  config.startup_ramp_ms = UINT32_MAX;
+  assert(!ProblemQ1_Validate(&config));
+}
+
+static void TestQ1PolarityAndVelocity(void)
+{
+  ProblemQ1_Config config = MakeQ1Config();
+  ProblemQ1 problem = {0};
+  ProblemQ1_Output before, output, after;
+  config.direction_sign = -1.0F;
+  config.axis = PROBLEM_Q1_AXIS_ROLL;
+  assert(ProblemQ1_Start(&problem, &config, 0U, true, true) == PROBLEM_Q1_OK);
+  assert(ProblemQ1_Step(&problem, 4500U, &output));
+  assert(fabsf(output.target_roll_deg + 14.17234F) < 0.001F);
+  assert(fabsf(output.target_pitch_deg) < 0.0001F);
+  /* The reported ground velocity includes both the ramp derivative and tan. */
+  for (uint32_t time = 100U; time <= 5000U; time += 37U)
+  {
+    assert(ProblemQ1_Step(&problem, time - 1U, &before));
+    assert(ProblemQ1_Step(&problem, time, &output));
+    assert(ProblemQ1_Step(&problem, time + 1U, &after));
+    const float numerical_velocity =
+        (after.target_position_m - before.target_position_m) / 0.002F;
+    assert(fabsf(numerical_velocity - output.target_velocity_mps) < 0.001F);
+  }
 }
 
 static void TestControlMixerGate(void)
@@ -146,6 +212,8 @@ int main(void)
   TestPidFilteredDerivativeHasNoSetpointKick();
   TestPidAntiWindupAndLimits();
   TestQ1TrajectoryAndPreconditions();
+  TestQ1MeasuredGeometryAndValidation();
+  TestQ1PolarityAndVelocity();
   TestControlMixerGate();
   puts("control algorithm tests passed");
   return 0;

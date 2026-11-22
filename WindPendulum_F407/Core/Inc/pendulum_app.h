@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 typedef enum {
-  PENDULUM_MODE_CALIBRATION = 0,
+  PENDULUM_MODE_CALIBRATION = 0, /* Legacy mode value; no startup calibration. */
   PENDULUM_MODE_IMU_FAULT,
   PENDULUM_MODE_READY,
   PENDULUM_MODE_LINE,
@@ -32,6 +32,10 @@ typedef struct {
   ImuSample imu;
   float roll_deg;
   float pitch_deg;
+  /* Mechanical frame: roll toward up, pitch toward right, clockwise azimuth. */
+  float direction_deg;
+  float tilt_deg;
+  uint8_t direction_valid;
   float target_roll_deg;
   float target_pitch_deg;
   float q1_target_position_m;
@@ -45,21 +49,31 @@ typedef struct {
   uint16_t pwm_permille[4];
   uint16_t pwm_applied_permille[4];
   uint16_t bus_current_adc;
+  float pitch_rate_dps;
+  float q1_predicted_peak_deg;
+  float q1_left_peak_deg;
+  float q1_right_peak_deg;
+  uint32_t q1_run_ms;
+  uint32_t q1_switches;
+  uint8_t q1_state;
+  uint8_t q1_reason;
+  uint8_t en_command;
+  uint8_t en_pin;
+  uint8_t key_bits;
   PendulumMode mode;
 } PendulumTelemetry;
 
 typedef struct {
   PendulumTelemetry telemetry;
-  uint32_t calibration_samples;
+  uint32_t calibration_samples; /* Legacy field, now zero with fixed offsets. */
   float gyro_bias_dps[3];
   uint8_t imu_online;
-  uint8_t calibrated;
+  uint8_t calibrated; /* Valid IMU data with the fixed gyro offsets applied. */
 } PendulumDisplayState;
 
 void PendulumApp_CreateTasks(void);
 void PendulumApp_SetMotorsArmed(uint8_t armed);
-bool PendulumApp_RequestQ1Start(const ProblemQ1_Config *problem_config,
-                                const PendulumControl_Config *control_config);
+bool PendulumApp_RequestQ1Start(void);
 bool PendulumApp_RequestQ1Cancel(void);
 
 #endif

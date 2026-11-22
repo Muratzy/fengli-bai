@@ -7,11 +7,12 @@ extern "C" {
 
 #include "stm32f4xx_hal.h"
 
-#define KEY1_Pin GPIO_PIN_13
+/* Match the board silkscreen: KEY1=PC0, KEY2=PC1, KEY3=PC13. */
+#define KEY1_Pin GPIO_PIN_0
 #define KEY1_GPIO_Port GPIOC
-#define KEY2_Pin GPIO_PIN_0
+#define KEY2_Pin GPIO_PIN_1
 #define KEY2_GPIO_Port GPIOC
-#define KEY3_Pin GPIO_PIN_1
+#define KEY3_Pin GPIO_PIN_13
 #define KEY3_GPIO_Port GPIOC
 #define BUZZER_Pin GPIO_PIN_12
 #define BUZZER_GPIO_Port GPIOD
