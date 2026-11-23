@@ -75,12 +75,12 @@ void PID_Reset(PID_Controller *controller, float measurement,
   controller->initialized = true;
 }
 
-float PID_Update(PID_Controller *controller, float setpoint,
-                 float measurement, float dt_s)
+static float PID_UpdateInternal(PID_Controller *controller, float setpoint,
+                                 float measurement, float derivative_input,
+                                 float dt_s, bool integrate)
 {
   float error;
   float proportional_input;
-  float derivative_input;
   float filter_alpha;
   float candidate_integral;
   float integral_delta;
@@ -91,7 +91,7 @@ float PID_Update(PID_Controller *controller, float setpoint,
   }
 
   if (!isfinite(setpoint) || !isfinite(measurement) ||
-      !isfinite(dt_s) || (dt_s <= 0.0F)) {
+      !isfinite(derivative_input) || !isfinite(dt_s) || (dt_s <= 0.0F)) {
     PID_Reset(controller, 0.0F, 0.0F);
     return 0.0F;
   }
@@ -102,7 +102,6 @@ float PID_Update(PID_Controller *controller, float setpoint,
       measurement;
   controller->p_term = controller->config.kp * proportional_input;
 
-  derivative_input = -(measurement - controller->previous_measurement) / dt_s;
   if (controller->config.derivative_filter_tau_s > 0.0F) {
     filter_alpha = dt_s / (controller->config.derivative_filter_tau_s + dt_s);
   } else {
@@ -112,8 +111,8 @@ float PID_Update(PID_Controller *controller, float setpoint,
       filter_alpha * (derivative_input - controller->derivative);
   controller->d_term = controller->config.kd * controller->derivative;
 
-  integral_delta = 0.5F * controller->config.ki *
-                   (error + controller->previous_error) * dt_s;
+  integral_delta = integrate ? 0.5F * controller->config.ki *
+                   (error + controller->previous_error) * dt_s : 0.0F;
   candidate_integral = controller->integral + integral_delta;
   candidate_integral = PID_Clamp(candidate_integral,
                                  controller->config.integral_min,
@@ -150,4 +149,22 @@ float PID_Update(PID_Controller *controller, float setpoint,
   controller->previous_error = error;
   controller->previous_measurement = measurement;
   return controller->output;
+}
+
+float PID_Update(PID_Controller *controller, float setpoint,
+                 float measurement, float dt_s)
+{
+  if (controller == NULL || !controller->initialized) return 0.0F;
+  const float derivative_input = (isfinite(dt_s) && dt_s > 0.0F) ?
+      -(measurement - controller->previous_measurement) / dt_s : 0.0F;
+  return PID_UpdateInternal(controller, setpoint, measurement,
+                            derivative_input, dt_s, true);
+}
+
+float PID_UpdateWithRate(PID_Controller *controller, float setpoint,
+                         float measurement, float target_rate,
+                         float measured_rate, float dt_s, bool integrate)
+{
+  return PID_UpdateInternal(controller, setpoint, measurement,
+                            target_rate - measured_rate, dt_s, integrate);
 }

@@ -33,5 +33,10 @@ void PID_Reset(PID_Controller *controller, float measurement,
                float output_seed);
 float PID_Update(PID_Controller *controller, float setpoint,
                  float measurement, float dt_s);
+/* Smooth trajectory tracking with gyro feedback. Rates use the same sign
+ * and units as setpoint/measurement; freeze integration during actuator lag. */
+float PID_UpdateWithRate(PID_Controller *controller, float setpoint,
+                         float measurement, float target_rate,
+                         float measured_rate, float dt_s, bool integrate);
 
 #endif

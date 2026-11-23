@@ -3,6 +3,7 @@
 
 #include "control/pendulum_control.h"
 #include "problems/problem_q1.h"
+#include "problems/problem_api.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -15,7 +16,9 @@ typedef enum {
   PENDULUM_MODE_CIRCLE,
   PENDULUM_MODE_BRAKE,
   PENDULUM_MODE_DISTURBANCE,
-  PENDULUM_MODE_Q1_BLOCKED
+  PENDULUM_MODE_Q1_BLOCKED,
+  PENDULUM_MODE_Q2_LINE,
+  PENDULUM_MODE_LASER_CAL_CAPTURE
 } PendulumMode;
 
 typedef struct {
@@ -60,6 +63,17 @@ typedef struct {
   uint8_t en_command;
   uint8_t en_pin;
   uint8_t key_bits;
+  uint8_t problem_id;
+  uint32_t target_length_mm;
+  float roll_rate_dps;
+  float target_pitch_rate_dps;
+  float filtered_pitch_rate_error_dps;
+  uint8_t pitch_integrating;
+  float pitch_kp;
+  float pitch_ki;
+  float pitch_kd;
+  uint32_t reference_period_ms;
+  uint32_t reference_ramp_ms;
   PendulumMode mode;
 } PendulumTelemetry;
 
@@ -73,7 +87,15 @@ typedef struct {
 
 void PendulumApp_CreateTasks(void);
 void PendulumApp_SetMotorsArmed(uint8_t armed);
+/* Task-context API for menus/acceptance switching. ACCEPTED means queued;
+ * GetProblemStatus reports actual start, completion or rejection. */
+ProblemRequestResult PendulumApp_RequestProblemStart(ProblemId id,
+                                                     const ProblemParams *params);
+bool PendulumApp_RequestProblemStop(void);
+bool PendulumApp_GetProblemStatus(ProblemStatus *status);
 bool PendulumApp_RequestQ1Start(void);
 bool PendulumApp_RequestQ1Cancel(void);
+bool PendulumApp_RequestQ2Start(uint32_t line_length_mm);
+bool PendulumApp_RequestQ2Cancel(void);
 
 #endif

@@ -206,6 +206,56 @@ static void TestControlMixerGate(void)
   assert(output.pwm_permille[1] == 500U);
 }
 
+static void TestGyroDerivativeAndIntegralFreeze(void)
+{
+  PID_Controller pid;
+  PID_Config config = MakePidConfig(0.0F, 2.0F, 1.0F, -100.0F, 100.0F);
+  config.derivative_filter_tau_s = 0.0F;
+  assert(PID_Init(&pid, &config));
+  PID_Reset(&pid, 10.0F, 0.0F);
+  assert(fabsf(PID_UpdateWithRate(&pid, 20.0F, 10.0F,
+      3.0F, 1.0F, 0.01F, false) - 2.0F) < 0.001F);
+  assert(pid.integral == 0.0F);
+  (void)PID_UpdateWithRate(&pid, 20.0F, 10.0F, 3.0F, 3.0F, 0.01F, true);
+  assert(pid.integral > 0.0F && pid.d_term == 0.0F);
+  const float previous = pid.integral;
+  (void)PID_UpdateWithRate(&pid, 30.0F, 10.0F, 3.0F, 3.0F, 0.01F, false);
+  assert(pid.integral == previous && pid.d_term == 0.0F);
+  assert(PID_UpdateWithRate(&pid, 0.0F, 0.0F, NAN, 0.0F, 0.01F, true) == 0.0F);
+}
+
+static void TestDisabledRollAndPitchPolarity(void)
+{
+  PendulumControl control;
+  PendulumControl_Config config = {0};
+  config.roll_pid = MakePidConfig(10.0F, 2.0F, 0.0F, -1000.0F, 1000.0F);
+  config.pitch_pid = MakePidConfig(10.0F, 0.0F, 0.0F, -1000.0F, 1000.0F);
+  config.max_duty_permille = 1000U;
+  config.mixer_calibrated = true;
+  config.disabled_axis_mask = PENDULUM_DISABLE_ROLL;
+  config.fan_mix[0][1] = 1.0F;
+  config.fan_mix[1][1] = -1.0F;
+  config.fan_mix[2][0] = 1.0F;
+  config.fan_mix[3][0] = -1.0F;
+  assert(PendulumControl_Init(&control, &config));
+  PendulumControl_Reset(&control, 0.0F, 0.0F);
+  PendulumControl_Input input = {.target_deg = {5.0F, 5.0F},
+      .dt_s = 0.002F, .integrate = {true, true}};
+  PendulumControl_Output output;
+  for (uint32_t step = 0U; step < 1000U; ++step) {
+    assert(PendulumControl_StepWithRates(&control, &input, &output));
+    assert(output.pwm_permille[0] == 50U && output.pwm_permille[1] == 0U);
+    assert(output.pwm_permille[2] == 0U && output.pwm_permille[3] == 0U);
+    assert(output.axis_output[0] == 0.0F && control.axis_pid[0].integral == 0.0F);
+  }
+  input.target_deg[1] = -5.0F;
+  assert(PendulumControl_StepWithRates(&control, &input, &output));
+  assert(output.pwm_permille[0] == 0U && output.pwm_permille[1] == 50U);
+  input.rate_dps[0] = NAN;
+  assert(!PendulumControl_StepWithRates(&control, &input, &output));
+  assert(output.pwm_permille[0] == 0U && output.pwm_permille[1] == 0U);
+}
+
 int main(void)
 {
   TestPidProportionalAndReset();
@@ -215,6 +265,8 @@ int main(void)
   TestQ1MeasuredGeometryAndValidation();
   TestQ1PolarityAndVelocity();
   TestControlMixerGate();
+  TestGyroDerivativeAndIntegralFreeze();
+  TestDisabledRollAndPitchPolarity();
   puts("control algorithm tests passed");
   return 0;
 }

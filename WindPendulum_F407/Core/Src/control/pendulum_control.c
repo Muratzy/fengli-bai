@@ -18,7 +18,8 @@ bool PendulumControl_Init(PendulumControl *control,
                           const PendulumControl_Config *config)
 {
   if ((control == NULL) || (config == NULL) ||
-      (config->max_duty_permille > 1000U)) {
+      (config->max_duty_permille > 1000U) ||
+      (config->disabled_axis_mask > 3U)) {
     return false;
   }
 
@@ -56,29 +57,36 @@ void PendulumControl_Reset(PendulumControl *control, float roll_deg,
   PID_Reset(&control->axis_pid[1], pitch_deg, 0.0F);
 }
 
-bool PendulumControl_Step(PendulumControl *control,
-                          float target_roll_deg, float target_pitch_deg,
-                          float roll_deg, float pitch_deg, float dt_s,
-                          PendulumControl_Output *output)
+static bool PendulumControl_Process(PendulumControl *control,
+                                     const PendulumControl_Input *input,
+                                     bool use_rates,
+                                     PendulumControl_Output *output)
 {
-  const float target[2] = {target_roll_deg, target_pitch_deg};
-  const float measurement[2] = {roll_deg, pitch_deg};
-
   if (output == NULL) {
     return false;
   }
   *output = (PendulumControl_Output){0};
-  if ((control == NULL) || !control->initialized ||
-      !isfinite(target_roll_deg) || !isfinite(target_pitch_deg) ||
-      !isfinite(roll_deg) || !isfinite(pitch_deg) ||
-      !isfinite(dt_s) || (dt_s <= 0.0F)) {
+  if ((control == NULL) || !control->initialized || input == NULL ||
+      !isfinite(input->dt_s) || input->dt_s <= 0.0F) {
     return false;
   }
 
   for (uint32_t axis = 0U; axis < 2U; ++axis) {
-    output->axis_output[axis] = PID_Update(&control->axis_pid[axis],
-                                           target[axis], measurement[axis],
-                                           dt_s);
+    if (!isfinite(input->target_deg[axis]) || !isfinite(input->angle_deg[axis]) ||
+        (use_rates && (!isfinite(input->target_rate_dps[axis]) ||
+                       !isfinite(input->rate_dps[axis])))) return false;
+  }
+  for (uint32_t axis = 0U; axis < 2U; ++axis) {
+    if ((control->config.disabled_axis_mask & (1U << axis)) != 0U) {
+      PID_Reset(&control->axis_pid[axis], input->angle_deg[axis], 0.0F);
+      continue;
+    }
+    output->axis_output[axis] = use_rates ?
+        PID_UpdateWithRate(&control->axis_pid[axis], input->target_deg[axis],
+            input->angle_deg[axis], input->target_rate_dps[axis],
+            input->rate_dps[axis], input->dt_s, input->integrate[axis]) :
+        PID_Update(&control->axis_pid[axis], input->target_deg[axis],
+            input->angle_deg[axis], input->dt_s);
     output->p[axis] = control->axis_pid[axis].p_term;
     output->i[axis] = control->axis_pid[axis].i_term;
     output->d[axis] = control->axis_pid[axis].d_term;
@@ -102,4 +110,22 @@ bool PendulumControl_Step(PendulumControl *control,
     output->pwm_permille[fan] = (uint16_t)(duty + 0.5F);
   }
   return true;
+}
+
+bool PendulumControl_Step(PendulumControl *control,
+                          float target_roll_deg, float target_pitch_deg,
+                          float roll_deg, float pitch_deg, float dt_s,
+                          PendulumControl_Output *output)
+{
+  const PendulumControl_Input input = {
+      .target_deg = {target_roll_deg, target_pitch_deg},
+      .angle_deg = {roll_deg, pitch_deg}, .dt_s = dt_s};
+  return PendulumControl_Process(control, &input, false, output);
+}
+
+bool PendulumControl_StepWithRates(PendulumControl *control,
+                                   const PendulumControl_Input *input,
+                                   PendulumControl_Output *output)
+{
+  return PendulumControl_Process(control, input, true, output);
 }

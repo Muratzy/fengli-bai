@@ -6,8 +6,22 @@
 #define APP_MOTOR1_TEST_ENABLED 0
 #endif
 
+#ifndef APP_LASER_CAL_CAPTURE_ENABLED
+#define APP_LASER_CAL_CAPTURE_ENABLED 0
+#endif
+
+#ifndef APP_Q2_UI_ENABLED
+#define APP_Q2_UI_ENABLED 1
+#endif
+
 #ifndef APP_OLED_ENABLED
+#if APP_LASER_CAL_CAPTURE_ENABLED
+#define APP_OLED_ENABLED 1
+#elif APP_Q2_UI_ENABLED
+#define APP_OLED_ENABLED 1
+#else
 #define APP_OLED_ENABLED 0
+#endif
 #endif
 
 /* Read-only bench telemetry, independent from the full button/menu UI. */
@@ -29,6 +43,10 @@
 #define APP_IMU_FRAME_UP     {-0.76034698F, -0.64865960F, 0.03336445F}
 #define APP_IMU_FRAME_NORMAL {0.01150097F, -0.06480569F, -0.99783162F}
 
+/* Centered laser zero offsets from the 2026-11-23 ground-mark check. */
+#define APP_IMU_ROLL_ZERO_DEG -0.97740F
+#define APP_IMU_PITCH_ZERO_DEG 0.19396F
+
 /* Measured geometry, meters. The laser is coaxial with the pendulum rod.
  * Ground projection uses pivot height, not pivot-to-pendulum-center length. */
 #define APP_PIVOT_GROUND_HEIGHT_M     0.99F
@@ -44,6 +62,21 @@
 #define APP_Q1_PWM_MAX_PERMILLE       1000U
 #define APP_Q1_PWM_RISE_MS             500U
 #define APP_Q1_PWM_FALL_MS             200U
+
+/* Q2 trajectory PID, initial bench values in PWM permille / degrees.
+ * These gains are untested on hardware. Roll remains disabled. */
+#define APP_Q2_DEFAULT_LENGTH_MM       600U
+#define APP_Q2_PERIOD_MS              1720U
+#define APP_Q2_AMPLITUDE_RAMP_MS      3440U
+#define APP_Q2_DURATION_MS           15000U
+#define APP_Q2_PWM_MAX_PERMILLE       1000U
+#define APP_Q2_PWM_RISE_MS             500U
+#define APP_Q2_PWM_FALL_MS             200U
+#define APP_Q2_PITCH_KP                 32.75F
+#define APP_Q2_PITCH_KI                  1.0F
+#define APP_Q2_PITCH_KD                  8.0F
+#define APP_Q2_RATE_FILTER_TAU_S         0.05F
+#define APP_Q2_INTEGRAL_LIMIT          150.0F
 
 #if (APP_Q1_PWM_START_PERMILLE >= APP_Q1_PWM_MAX_PERMILLE) || \
     (APP_Q1_PWM_MAX_PERMILLE > 1000U)

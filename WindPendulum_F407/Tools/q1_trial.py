@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Q1 swing capture. Default observes only; --action start explicitly starts once.
+"""Q1/Q2 capture. Default observes only; --action start explicitly starts once.
 
 COM9 is receive-only. The optional start/stop command is a single non-halting
 J-Link RAM mailbox write, so a J-Link-TX to PA10 wire is not required.
@@ -21,7 +21,7 @@ import time
 import serial
 
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = (
+LEGACY_HEADER = (
     'time_ms,gx_raw,gy_raw,gz_raw,ax_raw,ay_raw,az_raw,roll_cdeg,pitch_cdeg,accel_weight_permille,'
     'target_roll_cdeg,target_pitch_cdeg,temp_cdeg,p_roll_milli,i_roll_milli,d_roll_milli,'
     'p_pitch_milli,i_pitch_milli,d_pitch_milli,pid_roll_milli,pid_pitch_milli,target_position_mm,'
@@ -31,17 +31,32 @@ HEADER = (
     'pitch_rate_cdeg_s,q1_state,q1_reason,q1_run_ms,q1_switches,predicted_peak_cdeg,'
     'left_peak_cdeg,right_peak_cdeg,en_command,en_pin,keys'
 ).split(',')
+HEADER = LEGACY_HEADER + (
+    'problem_id,target_length_mm,roll_rate_cdeg_s,target_pitch_rate_cdeg_s,'
+    'filtered_pitch_rate_error_cdeg_s,pitch_integrating,pitch_kp_milli,'
+    'pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms'
+).split(',')
+Q2_EXTRA_FIELDS = ['host_rx_time', 'host_elapsed_s', 'requested_length_cm',
+    'roll_deg', 'pitch_deg', 'target_roll_deg', 'target_pitch_deg',
+    'roll_rate_dps', 'pitch_rate_dps', 'target_pitch_rate_dps',
+    'pitch_error_deg', 'ground_x_cm', 'ground_y_cm',
+    'pitch_p_permille', 'pitch_i_permille', 'pitch_d_permille', 'pitch_u_permille',
+    'pwm1_percent', 'pwm2_percent']
 REASONS = ['none', 'time_up', 'user_stop', 'sample_stale', 'angle_limit',
-           'no_turn', 'en_low', 'not_centered']
+           'no_turn', 'en_low', 'not_centered', 'invalid_config']
 
 
 def parse_line(line):
     values = line.decode('ascii').strip().split(',')
-    if values == HEADER:
+    if values == HEADER or values == LEGACY_HEADER:
         return None
-    if len(values) != len(HEADER):
-        raise ValueError('Q1 protocol requires %d fields' % len(HEADER))
-    row = dict(zip(HEADER, map(int, values)))
+    if len(values) not in (len(HEADER), len(LEGACY_HEADER)):
+        raise ValueError('Trial protocol requires 47 or 58 fields')
+    names = HEADER if len(values) == len(HEADER) else LEGACY_HEADER
+    row = dict.fromkeys(HEADER, 0)
+    row.update(zip(names, map(int, values)))
+    if names is LEGACY_HEADER:
+        row['problem_id'] = 2 if row['mode'] == 8 else 1
     if not 0 <= row['time_ms'] <= 0xFFFFFFFF:
         raise ValueError('Invalid MCU timestamp')
     if not (0 <= row['q1_state'] <= 4 and 0 <= row['q1_reason'] < len(REASONS)):
@@ -52,7 +67,75 @@ def parse_line(line):
     return row
 
 
-def mailbox(action, directory):
+def q2_csv_row(row, requested_mm, host_elapsed_s):
+    result = dict(row)
+    result.update(host_rx_time=dt.datetime.now().astimezone().isoformat(timespec='milliseconds'),
+                  host_elapsed_s=round(host_elapsed_s, 6), requested_length_cm=requested_mm/10)
+    for name in ['roll', 'pitch', 'target_roll', 'target_pitch']:
+        result[name + '_deg'] = row[name + '_cdeg']/100
+    for name in ['roll', 'pitch', 'target_pitch']:
+        result[name + '_rate_dps'] = row[name + '_rate_cdeg_s']/100
+    result['pitch_error_deg'] = (row['target_pitch_cdeg'] - row['pitch_cdeg'])/100
+    result['ground_x_cm'] = 99*math.tan(math.radians(row['pitch_cdeg']/100))/math.cos(math.radians(row['roll_cdeg']/100))
+    result['ground_y_cm'] = 99*math.tan(math.radians(row['roll_cdeg']/100))
+    for part in ['p', 'i', 'd']:
+        result['pitch_' + part + '_permille'] = row[part + '_pitch_milli']/1000
+    result['pitch_u_permille'] = row['pid_pitch_milli']/1000
+    for side in [1, 2]:
+        result['pwm%d_percent'%side] = row['pwm%d_applied_permille'%side]/10
+    return result
+
+
+def write_q2_fields(directory):
+    with (directory/'fields.csv').open('w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['field', 'unit', 'description'])
+        for name in HEADER + Q2_EXTRA_FIELDS:
+            unit = 'integer'
+            if name == 'temp_cdeg': unit = '0.01 Celsius'
+            elif name.endswith('_cdeg_s'): unit = '0.01 deg/s'
+            elif name.endswith('_cdeg'): unit = '0.01 deg'
+            elif name == 'pitch_kp_milli': unit = '(PWM permille/deg) x1000'
+            elif name == 'pitch_ki_milli': unit = '(PWM permille/(deg*s)) x1000'
+            elif name == 'pitch_kd_milli': unit = '(PWM permille/(deg/s)) x1000'
+            elif name.endswith('_milli'): unit = '0.001 PWM permille'
+            elif name.endswith('_permille'): unit = 'permille'
+            elif name.endswith('_deg'): unit = 'deg'
+            elif name.endswith('_dps'): unit = 'deg/s'
+            elif name.endswith('_cm'): unit = 'cm'
+            elif name.endswith('_mm_s'): unit = 'mm/s'
+            elif name.endswith('_mm'): unit = 'mm'
+            elif name.endswith('_ms'): unit = 'ms'
+            elif name.endswith('_percent'): unit = '%'
+            elif name == 'host_rx_time': unit = 'ISO8601 host time'
+            elif name == 'host_elapsed_s': unit = 'host seconds'
+            elif name.endswith('_adc') or name.endswith('_raw'): unit = 'raw count'
+            description = 'Host-derived value' if name in Q2_EXTRA_FIELDS else 'MCU telemetry snapshot'
+            if name == 'problem_id': description = '1=Q1, 2=Q2; explicit selected task'
+            if name == 'q1_switches': description = 'Q2: applied PWM polarity changes, not mechanical turns'
+            if name == 'pitch_integrating': description = '1=integrating; 0=frozen during slew/disable/stop'
+            writer.writerow([name, unit, description])
+
+
+def command_script(action, address, problem='q1', length_address=None, length_mm=500):
+    if action not in ('start', 'stop') or problem not in ('q1', 'q2'):
+        raise ValueError('Unknown trial command')
+    def checked(value):
+        if value is None or not 0x20000000 <= value < 0x20020000 or value % 4:
+            raise ValueError('Command address is outside aligned SRAM')
+        return value
+    checked(address)
+    lines = []
+    if action == 'start' and problem == 'q2':
+        if not 300 <= length_mm <= 600 or int(length_mm) != length_mm:
+            raise ValueError('Q2 length must be 300..600 integer mm')
+        lines.append('w4 0x%08X, 0x%08X' % (checked(length_address), length_mm))
+    code = 0x51315354 if action == 'stop' else (0x5132474F if problem == 'q2' else 0x5131474F)
+    lines.extend(['w4 0x%08X, 0x%08X' % (address, code), 'exit'])
+    return '\n'.join(lines) + '\n'
+
+
+def mailbox(action, directory, problem='q1', length_mm=500):
     manifest = json.loads((ROOT / 'build/workflow/last-run.json').read_text(encoding='utf-8-sig'))
     elf = Path(manifest['elf'])
     if not manifest.get('flashVerified') or hashlib.sha256(elf.read_bytes()).hexdigest().upper() != manifest['sha256']:
@@ -71,12 +154,17 @@ def mailbox(action, directory):
     address = int(match[1], 16)
     if not 0x20000000 <= address < 0x20020000 or address % 4:
         raise RuntimeError('Mailbox address is outside SRAM')
-    code = '0x5131474F' if action == 'start' else '0x51315354'
-    commands = 'w4 0x%08X, %s\nexit\n' % (address, code)
+    length_address = None
+    if action == 'start' and problem == 'q2':
+        match_length = re.search(r'^([0-9a-fA-F]+) [BbDd] g_q2_requested_length_mm$', symbols, re.M)
+        if not match_length:
+            raise RuntimeError('Q2 configuration mailbox not found in flashed ELF')
+        length_address = int(match_length[1], 16)
+    commands = command_script(action, address, problem, length_address, length_mm)
     (directory / ('command_' + action + '.jlink')).write_text(commands, encoding='ascii')
     staging = Path(r'C:\Temp\WindPendulumTools')
     staging.mkdir(parents=True, exist_ok=True)
-    script = staging / ('q1_command_' + action + '.jlink')
+    script = staging / (problem + '_command_' + action + '.jlink')
     script.write_text(commands, encoding='ascii')
     result = subprocess.run([
         r'C:\Users\Muratsy\SEGGER\JLink_V962\JLink.exe', '-device', 'STM32F407VE',
@@ -95,8 +183,36 @@ def board_time_restarted(previous, current):
     return current < previous and ((current - previous) & 0xFFFFFFFF) > 60000
 
 
+def q2_cycle_metrics(active):
+    settings = {(r['reference_period_ms'], r['reference_ramp_ms'], r['target_length_mm'])
+                for r in active if r['mode'] == 8 and r['reference_period_ms'] > 0}
+    if len(settings) != 1: return []
+    period, ramp, length = next(iter(settings))
+    groups = {}
+    for row in active:
+        groups.setdefault(row['q1_run_ms']//period, []).append(row)
+    result = []
+    for index, group in sorted(groups.items()):
+        if index*period < ramp or len(group) < 5 or \
+                group[0]['q1_run_ms']-index*period > 120 or \
+                (index+1)*period-group[-1]['q1_run_ms'] > 120:
+            continue
+        x = [99*math.tan(math.radians(r['pitch_cdeg']/100))/
+             math.cos(math.radians(r['roll_cdeg']/100)) for r in group]
+        errors = [(r['target_pitch_cdeg']-r['pitch_cdeg'])/100 for r in group]
+        result.append({'reference_cycle':index, 'start_run_ms':index*period,
+                       'end_run_ms':(index+1)*period, 'rows':len(group),
+                       'ground_span_cm':max(x)-min(x),
+                       'length_error_cm':max(x)-min(x)-length/10,
+                       'left_endpoint_cm':min(x), 'right_endpoint_cm':max(x),
+                       'center_cm':(max(x)+min(x))/2,
+                       'pitch_rmse_deg':math.sqrt(statistics.mean(e*e for e in errors))})
+    return result
+
+
 def analyze(rows, capture_error=None):
     active = [r for r in rows if r['q1_state'] == 1]
+    pid_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 for r in rows)
     restarts = [{'previous_ms': a['time_ms'], 'current_ms': b['time_ms']}
                 for a, b in zip(rows, rows[1:])
                 if board_time_restarted(a['time_ms'], b['time_ms'])]
@@ -104,6 +220,8 @@ def analyze(rows, capture_error=None):
     result = {'rows': len(rows), 'active_rows': len(active), 'full_sampling_rate': False,
               'mcu_time_restarts': len(restarts), 'time_restart_events': restarts,
               'terminal_state_observed': terminal_observed,
+              'controller': 'q2_trajectory_pid' if pid_trial else 'q1_endpoint',
+              'switch_count_meaning': 'applied_pwm_polarity_changes' if pid_trial else 'endpoint_decisions',
               'valid_for_tuning': terminal_observed and not restarts and not capture_error}
     if rows:
         result['last_state'] = rows[-1]['q1_state']
@@ -126,15 +244,38 @@ def analyze(rows, capture_error=None):
             'right_full_rows': sum(r['pwm2_applied_permille'] == 1000 for r in active),
             'coast_rows': sum(r['pwm1_applied_permille'] == r['pwm2_applied_permille'] == 0 for r in active),
             'both_on_rows': sum(bool(r['pwm1_applied_permille'] and r['pwm2_applied_permille']) for r in active),
-            'note': 'Angle-derived estimates only; a ruler/ground trace must verify actual 50 cm and linearity. '
-                    'Endpoint switching uses PWM ramps and turn/coast thresholds, not PID gains. '
+            'note': 'Angle-derived estimates only; a ruler/ground trace must verify actual length and linearity. ' +
+                    ('Q2 tracks a smooth angle trajectory using PID. ' if pid_trial else
+                     'Q1 uses endpoint switching and turn/coast thresholds. ') +
                     'Left motor PWM1 moves the pendulum right; right motor PWM2 moves it left.'})
+        if pid_trial:
+            errors = [(r['target_pitch_cdeg'] - r['pitch_cdeg']) / 100 for r in active]
+            result['pitch_tracking_rmse_deg'] = math.sqrt(statistics.mean(e*e for e in errors))
+            result['max_pitch_tracking_error_deg'] = max(map(abs, errors))
+            result['reference_cycles'] = q2_cycle_metrics(active)
+            result['pitch_output_saturated_rows'] = sum(abs(r['pid_pitch_milli']) >= 1000000 for r in active)
+            result['pitch_integrator_enabled_rows'] = sum(r['pitch_integrating'] == 1 for r in active)
+            gaps = [((b['time_ms']-a['time_ms']) & 0xFFFFFFFF) for a,b in zip(active,active[1:])]
+            if gaps:
+                result['median_telemetry_interval_ms'] = statistics.median(gaps)
+                result['max_telemetry_interval_ms'] = max(gaps)
+            result['pid_configurations'] = [dict(zip(
+                ['kp','ki','kd','period_ms','ramp_ms','target_length_mm'], values))
+                for values in sorted({(r['pitch_kp_milli']/1000,r['pitch_ki_milli']/1000,
+                    r['pitch_kd_milli']/1000,r['reference_period_ms'],r['reference_ramp_ms'],
+                    r['target_length_mm']) for r in active})]
     return result
 
 
 def capture(args):
-    directory = ROOT / '数据记录/串口' / dt.datetime.now().strftime('%Y%m%d_%H%M%S_COM9_q1_' + args.action)
+    problem = getattr(args, 'problem', 'q1')
+    length_mm = getattr(args, 'length_cm', 60) * 10
+    parent = ROOT / '数据记录/串口'
+    if problem == 'q2': parent /= 'Q2'
+    directory = parent / dt.datetime.now().strftime('%Y%m%d_%H%M%S_COM9_' + problem + '_' + args.action +
+                                                    ('_L%dcm'% (length_mm//10) if problem == 'q2' else ''))
     directory.mkdir(parents=True)
+    if problem == 'q2': write_q2_fields(directory)
     if args.action == 'stop':
         mailbox('stop', directory)
     port = serial.Serial(port=None, baudrate=115200, timeout=0.2)
@@ -144,7 +285,9 @@ def capture(args):
     started = time.monotonic()
     last_telemetry_at = started
     error = None
-    metadata = {'action': args.action, 'port': args.port, 'serial_write': False,
+    metadata = {'action': args.action, 'problem': problem,
+                'requested_length_mm': length_mm if problem == 'q2' else None,
+                'port': args.port, 'serial_write': False,
                 'host_sequence_is_not_mcu_sample_sequence': True}
     manifest_path = ROOT / 'build/workflow/last-run.json'
     if manifest_path.exists():
@@ -153,7 +296,7 @@ def capture(args):
     try:
         port.open()
         with (directory / 'raw.bin').open('wb') as raw, (directory / 'telemetry.csv').open('w', encoding='utf-8-sig', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=HEADER)
+            writer = csv.DictWriter(csvfile, fieldnames=HEADER + Q2_EXTRA_FIELDS if problem == 'q2' else HEADER)
             writer.writeheader()
             while time.monotonic() - started < args.duration:
                 chunk = port.read(max(1, min(port.in_waiting, 4096)))
@@ -170,8 +313,11 @@ def capture(args):
                     if row is not None:
                         previous_ms = rows[-1]['time_ms'] if rows else None
                         rows.append(row)
-                        writer.writerow(row)
+                        writer.writerow(q2_csv_row(row, length_mm, received_at-started) if problem == 'q2' else row)
                         last_telemetry_at = received_at
+                        if sent and problem == 'q2' and row['q1_state'] == 1 and (
+                            row['problem_id'] != 2 or row['target_length_mm'] != length_mm):
+                            raise RuntimeError('Q2 task/length acknowledgement mismatch; trial aborted')
                         if args.action == 'start' and previous_ms is not None and \
                                 board_time_restarted(previous_ms, row['time_ms']):
                             raise RuntimeError('MCU time restarted: %d -> %d ms; trial aborted' %
@@ -180,7 +326,8 @@ def capture(args):
                     raise RuntimeError('Telemetry lost for more than 0.5 s; trial aborted')
                 if args.action == 'start' and not sent and received_at - started >= 1.0:
                     recent = rows[-20:]
-                    if len(recent) < 20 or received_at - last_telemetry_at > 0.5 or any(r['mode'] != 2 or r['q1_state'] == 1 or
+                    allowed_modes = (2, 7) if problem == 'q2' else (2,)
+                    if len(recent) < 20 or received_at - last_telemetry_at > 0.5 or any(r['mode'] not in allowed_modes or r['q1_state'] == 1 or
                         abs(r['pitch_cdeg']) > 700 or abs(r['roll_cdeg']) > 700 or
                         r['keys'] & 4 or
                         r['en_command'] != 0 or r['en_pin'] != 0 or
@@ -189,7 +336,10 @@ def capture(args):
                         raise RuntimeError('Pre-start check failed: require READY within +/-7 degrees, zero PWM and EN off')
                     # If the write succeeds but logging fails, ensure finally still stops.
                     sent = True
-                    mailbox('start', directory)
+                    if problem == 'q2':
+                        mailbox('start', directory, problem='q2', length_mm=length_mm)
+                    else:
+                        mailbox('start', directory)
                     print('One start command sent; firmware limits the trial to 15 seconds.', flush=True)
     except (Exception, KeyboardInterrupt) as exc:
         error = str(exc) or type(exc).__name__
@@ -201,6 +351,8 @@ def capture(args):
             except Exception as exc:
                 error = (error or '') + '; final stop failed: ' + str(exc)
     report = analyze(rows, capture_error=error)
+    if problem == 'q2':
+        (directory/'analysis.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     if not error and not rows:
         error = 'No valid telemetry'
     if not error and sent and not any(r['q1_state'] == 1 for r in rows):
@@ -218,7 +370,11 @@ if __name__ == '__main__':
     parser.add_argument('--action', choices=['observe', 'start', 'stop'], default='observe')
     parser.add_argument('--port', default='COM9')
     parser.add_argument('--duration', type=float, default=20.0)
+    parser.add_argument('--problem', choices=['q1', 'q2'], default='q1')
+    parser.add_argument('--length-cm', type=int, default=60, help='Q2 total trace length, 30..60 cm')
     args = parser.parse_args()
     if not 0 < args.duration <= 60 or (args.action == 'start' and args.duration < 18):
         parser.error('duration must be 0..60 s, at least 18 s for a start trial')
+    if args.problem == 'q2' and not 30 <= args.length_cm <= 60:
+        parser.error('Q2 length must be 30..60 cm')
     capture(args)

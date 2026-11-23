@@ -22,11 +22,90 @@ def make_row(**updates):
 
 
 class TrialTests(unittest.TestCase):
+    def test_q2_command_script_validates_length_and_keeps_stop_global(self):
+        command = 0x2000025C
+        length = 0x20000260
+        script = trial.command_script('start', command, 'q2', length, 400)
+        self.assertEqual(script.splitlines(), [
+            'w4 0x20000260, 0x00000190', 'w4 0x2000025C, 0x5132474F', 'exit'])
+        self.assertIn('0x00000258', trial.command_script('start', command, 'q2', length, 600))
+        self.assertEqual(trial.command_script('stop', command, 'q2').splitlines(),
+                         ['w4 0x2000025C, 0x51315354', 'exit'])
+        self.assertIn('0x5131474F', trial.command_script('start', command))
+        for invalid in (299, 601, 400.5):
+            with self.assertRaises(ValueError):
+                trial.command_script('start', command, 'q2', length, invalid)
+        with self.assertRaises(ValueError):
+            trial.command_script('start', command, 'q2', 0x40000000, 500)
+
+    def test_q2_capture_selects_pid_and_requested_length_once(self):
+        def encode(row):
+            return (','.join(str(row[k]) for k in trial.HEADER) + '\n').encode()
+        chunks = [b''.join(encode(make_row(time_ms=3000 + i*20,
+                    pitch_cdeg=650, pitch_rate_cdeg_s=400)) for i in range(20)),
+                  encode(make_row(time_ms=3400, mode=8, q1_state=1,
+                    pitch_cdeg=80, target_pitch_cdeg=100, pwm1_applied_permille=100,
+                    problem_id=2, target_length_mm=400)),
+                  encode(make_row(time_ms=18000, q1_state=2, q1_reason=1))]
+
+        class FakePort:
+            @property
+            def in_waiting(self):
+                return len(chunks[0])
+            def open(self):
+                pass
+            def read(self, size):
+                return chunks.pop(0)
+            def write(self, data):
+                raise AssertionError('UART must remain receive-only')
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(trial, 'ROOT', pathlib.Path(temp)), \
+                mock.patch.object(trial.serial, 'Serial', return_value=FakePort()), \
+                mock.patch.object(trial.time, 'monotonic', side_effect=[0, 0, 1, 1.1, 1.2, 1.3, 1.4, 20.1, 20.2]), \
+                mock.patch.object(trial, 'mailbox') as mailbox, \
+                contextlib.redirect_stdout(io.StringIO()):
+            trial.capture(argparse.Namespace(action='start', problem='q2', length_cm=40,
+                                             port='TEST_ONLY', duration=20))
+            self.assertEqual([call.args[0] for call in mailbox.call_args_list], ['start', 'stop'])
+            self.assertEqual(mailbox.call_args_list[0].kwargs, {'problem':'q2', 'length_mm':400})
+            metadata = json.loads(next(pathlib.Path(temp).rglob('session.json')).read_text(encoding='utf-8'))
+            self.assertEqual(metadata['requested_length_mm'], 400)
+            self.assertEqual(metadata['analysis']['controller'], 'q2_trajectory_pid')
+            self.assertAlmostEqual(metadata['analysis']['pitch_tracking_rmse_deg'], 0.2)
+            self.assertTrue(next(pathlib.Path(temp).rglob('fields.csv')).exists())
+            self.assertTrue(next(pathlib.Path(temp).rglob('analysis.json')).exists())
+            self.assertIn('Q2', next(pathlib.Path(temp).rglob('telemetry.csv')).parts)
+            import csv
+            with next(pathlib.Path(temp).rglob('telemetry.csv')).open(encoding='utf-8-sig',newline='') as f:
+                captured = list(csv.DictReader(f))
+            self.assertAlmostEqual(float(captured[20]['pitch_error_deg']),0.2)
+
+    def test_legacy_rows_and_q2_reference_cycle_metrics(self):
+        import math
+        row = make_row()
+        legacy = ','.join(str(row[k]) for k in trial.LEGACY_HEADER).encode()
+        self.assertEqual(trial.parse_line(legacy)['problem_id'], 1)
+        self.assertIsNone(trial.parse_line(','.join(trial.LEGACY_HEADER).encode()))
+        active=[]
+        for ms in range(4000,6000,20):
+            angle=round(math.degrees(math.atan(0.3*math.sin(2*math.pi*ms/2000)/0.99))*100)
+            active.append(make_row(time_ms=ms,mode=8,q1_state=1,q1_run_ms=ms,
+                reference_period_ms=2000,reference_ramp_ms=2000,target_length_mm=600,
+                pitch_cdeg=angle,target_pitch_cdeg=angle,problem_id=2))
+        metrics=trial.q2_cycle_metrics(active)
+        self.assertEqual(len(metrics),1)
+        self.assertAlmostEqual(metrics[0]['ground_span_cm'],60,delta=0.05)
+        self.assertEqual(metrics[0]['pitch_rmse_deg'],0)
+        self.assertAlmostEqual(metrics[0]['center_cm'],0,delta=0.01)
+
     def test_schema_and_bounds(self):
         row = make_row(q1_state=1, mode=3, pwm2_applied_permille=1000)
         data = ','.join(str(row[k]) for k in trial.HEADER).encode()
         self.assertEqual(trial.parse_line(data), row)
-        self.assertEqual(len(trial.HEADER), 47)
+        self.assertEqual(len(trial.HEADER), 58)
         self.assertIsNone(trial.parse_line(','.join(trial.HEADER).encode()))
         with self.assertRaises(ValueError):
             trial.parse_line(b'1,2,3')
