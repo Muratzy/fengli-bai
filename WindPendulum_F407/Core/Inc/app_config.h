@@ -63,8 +63,8 @@
 #define APP_Q1_PWM_RISE_MS             500U
 #define APP_Q1_PWM_FALL_MS             200U
 
-/* Q2 trajectory PID, initial bench values in PWM permille / degrees.
- * These gains are untested on hardware. Roll remains disabled. */
+/* Q2 trajectory PID, current bench candidate in PWM permille / degrees.
+ * Qualification is pending; Roll remains disabled. */
 #define APP_Q2_DEFAULT_LENGTH_MM       600U
 #define APP_Q2_PERIOD_MS              1720U
 #define APP_Q2_AMPLITUDE_RAMP_MS      3440U
