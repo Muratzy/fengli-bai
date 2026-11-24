@@ -58,7 +58,7 @@
 #define APP_Q1_STOP_ROLL_DEG             8.0F
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
 #define APP_Q1_START_ANGLE_DEG           7.0F
-#define APP_Q1_PWM_MAX_PERMILLE        400U
+#define APP_Q1_PWM_MAX_PERMILLE        500U
 #define APP_Q1_PITCH_KP               32.75F
 #define APP_Q1_PITCH_KI                 1.0F
 #define APP_Q1_PITCH_KD                 8.0F
