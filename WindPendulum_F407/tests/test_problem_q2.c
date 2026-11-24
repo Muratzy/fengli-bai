@@ -1,3 +1,4 @@
+#include "app_config.h"
 #include "problems/problem_q2.h"
 #include <assert.h>
 #include <math.h>
@@ -5,11 +6,19 @@
 
 static void CheckOutput(const ProblemQ2 *problem)
 {
-  assert(problem->pwm[0] <= 1000U && problem->pwm[1] <= 1000U);
+  assert(problem->pwm[0] <= problem->config.max_pwm_permille);
+  assert(problem->pwm[1] <= problem->config.max_pwm_permille);
   assert(problem->pwm[0] == 0U || problem->pwm[1] == 0U);
   assert(problem->pwm[2] == 0U && problem->pwm[3] == 0U);
   assert(problem->controller.axis_pid[0].integral == 0.0F);
   assert(problem->control_output.axis_output[0] == 0.0F);
+}
+
+static void CheckDirectOutput(const ProblemQ2 *problem)
+{
+  CheckOutput(problem);
+  assert(problem->pwm[0] == problem->control_output.pwm_permille[0]);
+  assert(problem->pwm[1] == problem->control_output.pwm_permille[1]);
 }
 
 static void TestConfigAndStart(void)
@@ -32,41 +41,43 @@ static void TestConfigAndStart(void)
   config.pitch_pid.kp = NAN;
   assert(!ProblemQ2_Validate(&config));
   config = ProblemQ2_DefaultConfig();
+  assert(config.line_length_m == 0.50F);
+  assert(config.max_pwm_permille == APP_Q2_PWM_MAX_PERMILLE);
+  config.max_pwm_permille = 0U;
+  assert(!ProblemQ2_Validate(&config));
+  config = ProblemQ2_DefaultConfig();
   assert(!ProblemQ2_Start(&problem, &config, 0U, 7.01F, 0.0F));
   assert(ProblemQ2_Start(&problem, &config, 0U, 7.0F, -7.0F));
   assert(problem.pwm[0] == 0U && problem.pwm[1] == 0U);
   ProblemQ2_Step(&problem, 2U, 7.0F, -7.0F, 4.0F, 4.0F, true, false);
   assert(problem.state == PROBLEM_Q2_RUNNING);
+  assert(!problem.pitch_integrating);
+  assert(problem.control_output.i[PENDULUM_AXIS_PITCH] == 0.0F);
   CheckOutput(&problem);
 }
 
-static void TestSlewPolarityAndStop(void)
+static void TestDirectPwmPolarityAndStop(void)
 {
   ProblemQ2_Config config = ProblemQ2_DefaultConfig();
-  config.pitch_pid.kp = 100.0F;
+  config.pitch_pid.kp = (float)config.max_pwm_permille;
   config.pitch_pid.ki = 0.0F;
   config.pitch_pid.kd = 0.0F;
   ProblemQ2 problem = {0};
   assert(ProblemQ2_Start(&problem, &config, 0U, 0.0F, -5.0F));
-  for (uint32_t ms = 2U; ms <= 100U; ms += 2U) {
-    ProblemQ2_Step(&problem, ms, 0.0F, -5.0F, 0.0F, 0.0F, true, false);
-    CheckOutput(&problem);
-    assert(problem.pwm[0] <= ms * 2U && problem.pwm[1] == 0U);
-  }
-  assert(problem.pwm[0] == 200U);
-  bool saw_zero = false;
-  for (uint32_t ms = 102U; ms <= 300U; ms += 2U) {
-    const uint16_t old_left = problem.pwm[0];
-    ProblemQ2_Step(&problem, ms, 0.0F, 5.0F, 0.0F, 0.0F, true, false);
-    CheckOutput(&problem);
-    if (old_left > 0U) {
-      assert(problem.pwm[1] == 0U);
-      assert(old_left - problem.pwm[0] <= 10);
-    }
-    if (problem.pwm[0] == 0U && problem.pwm[1] == 0U) saw_zero = true;
-  }
-  assert(saw_zero && problem.pwm[1] > 0U && problem.switches == 1U);
-  ProblemQ2_Step(&problem, 302U, 0.0F, 5.0F, 0.0F, 0.0F, true, true);
+  ProblemQ2_Step(&problem, 2U, 0.0F, -5.0F, 0.0F, 0.0F, true, false);
+  CheckDirectOutput(&problem);
+  assert(problem.pwm[0] == config.max_pwm_permille && problem.pwm[1] == 0U);
+
+  ProblemQ2_Step(&problem, 4U, 0.0F, 5.0F, 0.0F, 0.0F, true, false);
+  CheckDirectOutput(&problem);
+  assert(problem.pwm[0] == 0U && problem.pwm[1] == config.max_pwm_permille);
+  assert(problem.switches == 1U);
+
+  ProblemQ2_Step(&problem, 6U, 0.0F, 0.0F, 0.0F, 0.0F, true, false);
+  CheckDirectOutput(&problem);
+  assert(problem.pwm[1] < config.max_pwm_permille);
+
+  ProblemQ2_Step(&problem, 8U, 0.0F, 5.0F, 0.0F, 0.0F, true, true);
   assert(problem.state == PROBLEM_Q2_STOPPED && problem.pwm[1] == 0U);
 }
 
@@ -102,16 +113,18 @@ static void TestTrajectoryWindowAndWrap(uint32_t start, float length)
   assert(problem.state == PROBLEM_Q2_FINISHED);
 }
 
-static void TestFaultAndSlewIntegralFreeze(void)
+static void TestFaultAndDirectIntegral(void)
 {
   ProblemQ2_Config config = ProblemQ2_DefaultConfig();
+  config.pitch_pid.ki = 1.0F;
   ProblemQ2 problem = {0};
   assert(ProblemQ2_Start(&problem, &config, 0U, 0.0F, -5.0F));
-  for (uint32_t ms = 2U; ms <= 80U; ms += 2U)
-    ProblemQ2_Step(&problem, ms, 0.0F, -5.0F, 0.0F, 0.0F, true, false);
-  assert(fabsf(problem.controller.axis_pid[1].integral) < 0.1F);
+  ProblemQ2_Step(&problem, 2U, 0.0F, -5.0F, 0.0F, 0.0F, true, false);
+  assert(problem.pitch_integrating);
+  assert(problem.controller.axis_pid[1].integral > 0.0F);
+  CheckDirectOutput(&problem);
   assert(problem.pwm[0] > 0U);
-  ProblemQ2_Step(&problem, 101U, 0.0F, -5.0F, 0.0F, 0.0F, true, false);
+  ProblemQ2_Step(&problem, 23U, 0.0F, -5.0F, 0.0F, 0.0F, true, false);
   assert(problem.reason == PROBLEM_Q2_SAMPLE_STALE && problem.pwm[0] == 0U);
   assert(ProblemQ2_Start(&problem, &config, 200U, 0.0F, 0.0F));
   ProblemQ2_Step(&problem, 202U, 0.0F, 26.0F, 0.0F, 0.0F, true, false);
@@ -124,8 +137,8 @@ static void TestFaultAndSlewIntegralFreeze(void)
 int main(void)
 {
   TestConfigAndStart();
-  TestSlewPolarityAndStop();
-  TestFaultAndSlewIntegralFreeze();
+  TestDirectPwmPolarityAndStop();
+  TestFaultAndDirectIntegral();
   TestTrajectoryWindowAndWrap(0U, 0.30F);
   TestTrajectoryWindowAndWrap(0U, 0.60F);
   TestTrajectoryWindowAndWrap(UINT32_MAX - 200U, 0.50F);

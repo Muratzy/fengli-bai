@@ -104,7 +104,9 @@ static void TestQ1TrajectoryAndPreconditions(void)
   assert(ProblemQ1_Step(&problem, 5100U, &output));
   assert(fabsf(output.target_position_m) < 0.0001F);
   assert(output.target_velocity_mps < 0.0F);
-  assert(ProblemQ1_Step(&problem, 15100U, &output));
+  assert(ProblemQ1_Step(&problem, 100U + config.duration_ms - 1U, &output));
+  assert(!output.complete);
+  assert(ProblemQ1_Step(&problem, 100U + config.duration_ms, &output));
   assert(output.complete);
   assert(problem.state == PROBLEM_Q1_COMPLETE);
   assert(fabsf(output.target_position_m) < 0.001F);
@@ -116,7 +118,7 @@ static void TestQ1MeasuredGeometryAndValidation(void)
   ProblemQ1 problem = {0};
   ProblemQ1_Output output;
   assert(config.swing_period_ms == 1642U);
-  assert(config.startup_ramp_ms == 3284U);
+  assert(config.startup_ramp_ms == 2U * config.swing_period_ms);
   assert(config.axis == PROBLEM_Q1_AXIS_PITCH);
   assert(ProblemQ1_Validate(&config));
   /* A 60 cm trace is +/-30 cm, not 60 cm to one side. */

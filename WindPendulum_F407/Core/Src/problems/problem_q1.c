@@ -5,26 +5,20 @@
 #include <stddef.h>
 
 #define PROBLEM_Q1_MIN_LENGTH_M       0.50F
-#define PROBLEM_Q1_MAX_DURATION_MS    15000U
+#define PROBLEM_Q1_MAX_DURATION_MS    25000U
 #define PROBLEM_Q1_DEG_PER_RAD        57.2957795131F
 #define PROBLEM_Q1_PI                 3.1415926536F
 #define PROBLEM_Q1_TWO_PI             6.2831853072F
-#define PROBLEM_Q1_GRAVITY_M_S2       9.80665F
 
 ProblemQ1_Config ProblemQ1_DefaultConfig(void)
 {
-  /* This point-mass estimate is a starting reference, not a measured period
-   * or a physical-pendulum inertia identification. */
-  const float period_s = PROBLEM_Q1_TWO_PI *
-      sqrtf(APP_PIVOT_PENDULUM_CENTER_M / PROBLEM_Q1_GRAVITY_M_S2);
-  const uint32_t period_ms = (uint32_t)(period_s * 1000.0F + 0.5F);
   const ProblemQ1_Config config = {
       .line_length_m = APP_Q1_LINE_LENGTH_M,
       .ground_height_m = APP_PIVOT_GROUND_HEIGHT_M,
       .max_angle_deg = 20.0F,
       .direction_sign = 1.0F,
-      .swing_period_ms = period_ms,
-      .startup_ramp_ms = 2U * period_ms,
+      .swing_period_ms = APP_Q1_PERIOD_MS,
+      .startup_ramp_ms = 2U * APP_Q1_PERIOD_MS,
       .duration_ms = APP_Q1_DURATION_MS,
       .axis = PROBLEM_Q1_AXIS_PITCH};
   return config;

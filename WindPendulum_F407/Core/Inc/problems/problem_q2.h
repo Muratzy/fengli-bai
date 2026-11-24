@@ -23,8 +23,6 @@ typedef struct {
   uint32_t period_ms;
   uint32_t amplitude_ramp_ms;
   uint32_t duration_ms; /* Bench window ending is not a qualification verdict. */
-  uint32_t pwm_rise_ms;
-  uint32_t pwm_fall_ms;
   uint16_t max_pwm_permille;
   PID_Config roll_pid;
   PID_Config pitch_pid;
@@ -41,7 +39,6 @@ typedef struct {
   uint32_t run_ms;
   uint32_t switches; /* Actual applied PWM polarity changes, not measured turns. */
   int last_pwm_sign;
-  float slew_duty[2];
   uint16_t pwm[4];
   float target_roll_deg;
   float target_pitch_deg;

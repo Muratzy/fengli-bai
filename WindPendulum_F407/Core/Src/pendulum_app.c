@@ -565,7 +565,7 @@ static void TelemetryTask(void *argument)
       "predicted_peak_cdeg,left_peak_cdeg,right_peak_cdeg,en_command,en_pin,keys,"
       "problem_id,target_length_mm,roll_rate_cdeg_s,target_pitch_rate_cdeg_s,"
       "filtered_pitch_rate_error_cdeg_s,pitch_integrating,pitch_kp_milli,"
-      "pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms\r\n";
+      "pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms,pwm_limit_permille\r\n";
   PendulumTelemetry data;
   char line[768];
 
@@ -574,11 +574,14 @@ static void TelemetryTask(void *argument)
     if (xQueueReceive(g_telemetry_queue, &data, portMAX_DELAY) != pdPASS) {
       continue;
     }
+    const unsigned pwm_limit = (data.problem_id == PROBLEM_Q2) ?
+        APP_Q2_PWM_MAX_PERMILLE : (data.problem_id == PROBLEM_Q1) ?
+        APP_Q1_PWM_MAX_PERMILLE : 0U;
     const int length = snprintf(line, sizeof(line),
         "%lu,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,"
         "%ld,%ld,%ld,%ld,%ld,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%ld,%ld,%u,"
         "%ld,%u,%u,%lu,%lu,%ld,%ld,%ld,%u,%u,%u,"
-        "%u,%lu,%ld,%ld,%ld,%u,%ld,%ld,%ld,%lu,%lu\r\n",
+        "%u,%lu,%ld,%ld,%ld,%u,%ld,%ld,%ld,%lu,%lu,%u\r\n",
         (unsigned long)data.timestamp_ms,
         data.imu.gyro_raw[0], data.imu.gyro_raw[1], data.imu.gyro_raw[2],
         data.imu.accel_raw[0], data.imu.accel_raw[1], data.imu.accel_raw[2],
@@ -617,7 +620,7 @@ static void TelemetryTask(void *argument)
         (long)(data.filtered_pitch_rate_error_dps * 100.0F), (unsigned)data.pitch_integrating,
         (long)(data.pitch_kp * 1000.0F), (long)(data.pitch_ki * 1000.0F),
         (long)(data.pitch_kd * 1000.0F), (unsigned long)data.reference_period_ms,
-        (unsigned long)data.reference_ramp_ms);
+        (unsigned long)data.reference_ramp_ms, pwm_limit);
     if (length > 0 && (size_t)length < sizeof(line)) {
       (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 50U);
     }

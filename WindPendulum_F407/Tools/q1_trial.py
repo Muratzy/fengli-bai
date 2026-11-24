@@ -20,6 +20,8 @@ import time
 
 import serial
 
+from trial_report import first_terminal_index, pitch_period, pitch_phase_lag_ms, pwm_saturation, save_curves
+
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY_HEADER = (
     'time_ms,gx_raw,gy_raw,gz_raw,ax_raw,ay_raw,az_raw,roll_cdeg,pitch_cdeg,accel_weight_permille,'
@@ -31,11 +33,13 @@ LEGACY_HEADER = (
     'pitch_rate_cdeg_s,q1_state,q1_reason,q1_run_ms,q1_switches,predicted_peak_cdeg,'
     'left_peak_cdeg,right_peak_cdeg,en_command,en_pin,keys'
 ).split(',')
-HEADER = LEGACY_HEADER + (
+PID_HEADER = LEGACY_HEADER + (
     'problem_id,target_length_mm,roll_rate_cdeg_s,target_pitch_rate_cdeg_s,'
     'filtered_pitch_rate_error_cdeg_s,pitch_integrating,pitch_kp_milli,'
     'pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms'
 ).split(',')
+HEADER = PID_HEADER + ['pwm_limit_permille']
+HEADERS_BY_COUNT = {len(fields): fields for fields in (LEGACY_HEADER, PID_HEADER, HEADER)}
 Q2_EXTRA_FIELDS = ['host_rx_time', 'host_elapsed_s', 'requested_length_cm',
     'roll_deg', 'pitch_deg', 'target_roll_deg', 'target_pitch_deg',
     'roll_rate_dps', 'pitch_rate_dps', 'target_pitch_rate_dps',
@@ -48,11 +52,11 @@ REASONS = ['none', 'time_up', 'user_stop', 'sample_stale', 'angle_limit',
 
 def parse_line(line):
     values = line.decode('ascii').strip().split(',')
-    if values == HEADER or values == LEGACY_HEADER:
+    names = HEADERS_BY_COUNT.get(len(values))
+    if values == names:
         return None
-    if len(values) not in (len(HEADER), len(LEGACY_HEADER)):
-        raise ValueError('Trial protocol requires 47 or 58 fields')
-    names = HEADER if len(values) == len(HEADER) else LEGACY_HEADER
+    if names is None:
+        raise ValueError('Trial protocol requires 47, 58, or 59 fields')
     row = dict.fromkeys(HEADER, 0)
     row.update(zip(names, map(int, values)))
     if names is LEGACY_HEADER:
@@ -64,6 +68,8 @@ def parse_line(line):
     for i in range(1, 5):
         if not 0 <= row['pwm%d_applied_permille' % i] <= 1000:
             raise ValueError('Unexpected duty')
+    if not 0 <= row['pwm_limit_permille'] <= 1000:
+        raise ValueError('Unexpected PWM limit')
     return row
 
 
@@ -113,7 +119,8 @@ def write_q2_fields(directory):
             description = 'Host-derived value' if name in Q2_EXTRA_FIELDS else 'MCU telemetry snapshot'
             if name == 'problem_id': description = '1=Q1, 2=Q2; explicit selected task'
             if name == 'q1_switches': description = 'Applied PWM polarity changes; legacy Q1 rows used endpoint decisions'
-            if name == 'pitch_integrating': description = '1=integrating; 0=frozen during slew/disable/stop'
+            if name == 'pitch_integrating': description = '1=integral enabled; 0=disabled or stopped'
+            if name == 'pwm_limit_permille': description = 'MCU duty limit; 0=not reported'
             writer.writerow([name, unit, description])
 
 
@@ -183,45 +190,66 @@ def board_time_restarted(previous, current):
     return current < previous and ((current - previous) & 0xFFFFFFFF) > 60000
 
 
-def q2_cycle_metrics(active):
-    settings = {(r['reference_period_ms'], r['reference_ramp_ms'], r['target_length_mm'])
-                for r in active if r['mode'] == 8 and r['reference_period_ms'] > 0}
+def reference_cycle_metrics(active, stop_ms=None):
+    settings = {(r['problem_id'], r['reference_period_ms'], r['reference_ramp_ms'], r['target_length_mm'])
+                for r in active}
     if len(settings) != 1: return []
-    period, ramp, length = next(iter(settings))
+    problem, period, ramp, length = next(iter(settings))
+    if problem not in (1, 2) or period <= 0 or length <= 0:
+        return []
     groups = {}
     for row in active:
         groups.setdefault(row['q1_run_ms']//period, []).append(row)
     result = []
     for index, group in sorted(groups.items()):
-        if index*period < ramp or len(group) < 5 or \
-                group[0]['q1_run_ms']-index*period > 120 or \
-                (index+1)*period-group[-1]['q1_run_ms'] > 120:
+        start_ms = index * period
+        end_ms = start_ms + period
+        if start_ms < ramp or len(group) < 5 or \
+                (stop_ms is not None and end_ms > stop_ms) or \
+                group[0]['q1_run_ms'] - start_ms > 120 or \
+                end_ms - group[-1]['q1_run_ms'] > 120:
             continue
         x = [99*math.tan(math.radians(r['pitch_cdeg']/100))/
              math.cos(math.radians(r['roll_cdeg']/100)) for r in group]
         errors = [(r['target_pitch_cdeg']-r['pitch_cdeg'])/100 for r in group]
-        result.append({'reference_cycle':index, 'start_run_ms':index*period,
-                       'end_run_ms':(index+1)*period, 'rows':len(group),
+        result.append({'reference_cycle':index, 'start_run_ms':start_ms,
+                       'end_run_ms':end_ms, 'rows':len(group),
                        'ground_span_cm':max(x)-min(x),
                        'length_error_cm':max(x)-min(x)-length/10,
                        'left_endpoint_cm':min(x), 'right_endpoint_cm':max(x),
                        'center_cm':(max(x)+min(x))/2,
-                       'pitch_rmse_deg':math.sqrt(statistics.mean(e*e for e in errors))})
+                       'pitch_rmse_deg':math.sqrt(statistics.mean(e*e for e in errors)),
+                       'pitch_phase_lag_ms':pitch_phase_lag_ms(group, period)})
     return result
 
 
-def analyze(rows, capture_error=None):
+def analyze(rows, capture_error=None, historical_pwm_limit=None):
     active = [r for r in rows if r['q1_state'] == 1]
+    first_active = next((i for i, row in enumerate(rows) if row['q1_state'] == 1), None)
     pid_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 or
-                    (r.get('problem_id') == 1 and r.get('pitch_kp_milli', 0) != 0)
+                    (r.get('problem_id') == 1 and (r.get('reference_period_ms', 0) > 0 or
+                     any(r.get(f'pitch_k{term}_milli', 0) for term in 'pid')))
                     for r in rows)
     restarts = [{'previous_ms': a['time_ms'], 'current_ms': b['time_ms']}
                 for a, b in zip(rows, rows[1:])
                 if board_time_restarted(a['time_ms'], b['time_ms'])]
-    terminal_observed = bool(active) and rows[-1]['q1_state'] in (2, 3, 4)
+    terminal = first_terminal_index(rows, first_active) if first_active is not None else None
+    first_stop = None
+    if terminal is not None:
+        stop_row = rows[terminal]
+        first_stop = {
+            'run_ms': stop_row['q1_run_ms'],
+            'state': stop_row['q1_state'],
+            'reason': REASONS[stop_row['q1_reason']],
+            'pitch_deg': stop_row['pitch_cdeg'] / 100,
+            'roll_deg': stop_row['roll_cdeg'] / 100,
+            'pitch_rate_dps': stop_row['pitch_rate_cdeg_s'] / 100,
+        }
+    terminal_observed = first_stop is not None
     result = {'rows': len(rows), 'active_rows': len(active), 'full_sampling_rate': False,
               'mcu_time_restarts': len(restarts), 'time_restart_events': restarts,
               'terminal_state_observed': terminal_observed,
+              'first_stop': first_stop,
               'controller': ('q2_trajectory_pid' if any(r['mode'] == 8 or
                   r.get('problem_id') == 2 for r in rows) else
                   'q1_reference_pid' if pid_trial else 'q1_legacy_endpoint'),
@@ -260,8 +288,18 @@ def analyze(rows, capture_error=None):
             errors = [(r['target_pitch_cdeg'] - r['pitch_cdeg']) / 100 for r in active]
             result['pitch_tracking_rmse_deg'] = math.sqrt(statistics.mean(e*e for e in errors))
             result['max_pitch_tracking_error_deg'] = max(map(abs, errors))
-            result['reference_cycles'] = q2_cycle_metrics(active)
-            result['pitch_output_saturated_rows'] = sum(abs(r['pid_pitch_milli']) >= 1000000 for r in active)
+            stop_ms = first_stop['run_ms'] if first_stop is not None else None
+            result['reference_cycles'] = reference_cycle_metrics(active, stop_ms)
+            periods = {r['reference_period_ms'] for r in active}
+            ramps = {r['reference_ramp_ms'] for r in active}
+            result['target_pitch_period_ms'] = next(iter(periods)) if len(periods) == 1 and 0 not in periods else None
+            result.update(pitch_period(active, max(ramps)))
+            saturation = pwm_saturation(active, historical_pwm_limit)
+            result['pwm_saturation'] = saturation
+            limit = saturation['limit_permille']
+            result['pitch_output_saturated_rows'] = (
+                sum(abs(r['pid_pitch_milli']) >= limit * 1000 for r in active)
+                if limit is not None else None)
             result['pitch_integrator_enabled_rows'] = sum(r['pitch_integrating'] == 1 for r in active)
             gaps = [((b['time_ms']-a['time_ms']) & 0xFFFFFFFF) for a,b in zip(active,active[1:])]
             if gaps:
@@ -273,6 +311,33 @@ def analyze(rows, capture_error=None):
                     r['pitch_kd_milli']/1000,r['reference_period_ms'],r['reference_ramp_ms'],
                     r['target_length_mm']) for r in active})]
     return result
+
+
+def export_report(directory, rows, report, plot):
+    (directory / 'analysis.json').write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    if plot and 'pitch_tracking_rmse_deg' in report:
+        save_curves(directory / 'control_curves.png', rows, report)
+
+
+def report_session(directory, historical_pwm_limit=None):
+    metadata = json.loads((directory / 'session.json').read_text(encoding='utf-8-sig'))
+    with (directory / 'telemetry.csv').open(encoding='utf-8-sig', newline='') as csvfile:
+        reader = csv.DictReader(csvfile)
+        fields = set(reader.fieldnames or ())
+        if fields.issuperset(HEADER):
+            names = HEADER
+        elif fields.issuperset(PID_HEADER):
+            names = PID_HEADER
+        elif fields.issuperset(LEGACY_HEADER):
+            names = LEGACY_HEADER
+        else:
+            raise ValueError('Unrecognized telemetry CSV header')
+        rows = [parse_line(','.join(row[name] for name in names).encode('ascii')) for row in reader]
+    report = analyze(rows, capture_error=metadata.get('error'),
+                     historical_pwm_limit=historical_pwm_limit)
+    export_report(directory, rows, report, plot=True)
+    return report
 
 
 def capture(args):
@@ -348,7 +413,7 @@ def capture(args):
                         mailbox('start', directory, problem='q2', length_mm=length_mm)
                     else:
                         mailbox('start', directory)
-                    print('One start command sent; firmware limits the trial to 15 seconds.', flush=True)
+                    print('One start command sent; waiting for the board to stop.', flush=True)
     except (Exception, KeyboardInterrupt) as exc:
         error = str(exc) or type(exc).__name__
     finally:
@@ -358,15 +423,19 @@ def capture(args):
                 mailbox('stop', directory)
             except Exception as exc:
                 error = (error or '') + '; final stop failed: ' + str(exc)
+    duration_s = time.monotonic() - started
     report = analyze(rows, capture_error=error)
-    if problem == 'q2':
-        (directory/'analysis.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    if args.action == 'start' or problem == 'q2':
+        try:
+            export_report(directory, rows, report, plot=args.action == 'start')
+        except (ImportError, OSError, ValueError, RuntimeError) as exc:
+            metadata['report_error'] = str(exc)
     if not error and not rows:
         error = 'No valid telemetry'
     if not error and sent and not any(r['q1_state'] == 1 for r in rows):
         error = 'Start was sent but RUNNING was not observed'
     metadata.update(start_sent=sent, invalid_or_partial_lines=invalid, error=error,
-                    duration_s=time.monotonic() - started, trailing_bytes=len(pending), analysis=report)
+                    duration_s=duration_s, trailing_bytes=len(pending), analysis=report)
     (directory / 'session.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(metadata, ensure_ascii=False, indent=2))
     if error:
@@ -377,12 +446,32 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--action', choices=['observe', 'start', 'stop'], default='observe')
     parser.add_argument('--port', default='COM9')
-    parser.add_argument('--duration', type=float, default=20.0)
+    parser.add_argument('--duration', type=float,
+                        help='Capture seconds (default: 30 for Q1 start, 20 otherwise)')
     parser.add_argument('--problem', choices=['q1', 'q2'], default='q1')
     parser.add_argument('--length-cm', type=int, default=60, help='Q2 total trace length, 30..60 cm')
+    parser.add_argument('--report-session', type=Path, help='Analyze a saved session without using hardware')
+    parser.add_argument('--historical-pwm-limit', type=int,
+                        help='Known PWM limit in permille for a saved session that did not report it')
     args = parser.parse_args()
-    if not 0 < args.duration <= 60 or (args.action == 'start' and args.duration < 18):
-        parser.error('duration must be 0..60 s, at least 18 s for a start trial')
+    if args.historical_pwm_limit is not None:
+        if args.report_session is None or not 1 <= args.historical_pwm_limit <= 1000:
+            parser.error('--historical-pwm-limit requires --report-session and a limit from 1 to 1000')
+    if args.report_session is not None:
+        try:
+            result = report_session(args.report_session, args.historical_pwm_limit)
+        except (ImportError, OSError, ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0)
+    q1_start = args.action == 'start' and args.problem == 'q1'
+    if args.duration is None:
+        args.duration = 30.0 if q1_start else 20.0
+    if not 0 < args.duration <= 60:
+        parser.error('duration must be greater than 0 and at most 60 s')
+    minimum_start_duration = 28 if q1_start else 18
+    if args.action == 'start' and args.duration < minimum_start_duration:
+        parser.error(f'{args.problem.upper()} start needs at least {minimum_start_duration} s of capture')
     if args.problem == 'q2' and not 30 <= args.length_cm <= 60:
         parser.error('Q2 length must be 30..60 cm')
     capture(args)

@@ -25,7 +25,6 @@ ProblemQ2_Config ProblemQ2_DefaultConfig(void)
       .period_ms = APP_Q2_PERIOD_MS,
       .amplitude_ramp_ms = APP_Q2_AMPLITUDE_RAMP_MS,
       .duration_ms = APP_Q2_DURATION_MS,
-      .pwm_rise_ms = APP_Q2_PWM_RISE_MS, .pwm_fall_ms = APP_Q2_PWM_FALL_MS,
       .max_pwm_permille = APP_Q2_PWM_MAX_PERMILLE,
       .roll_pid = pid, .pitch_pid = pid};
   return config;
@@ -41,8 +40,6 @@ bool ProblemQ2_Validate(const ProblemQ2_Config *config)
       config->duration_ms == 0U || config->duration_ms > 15000U ||
       config->amplitude_ramp_ms == 0U || config->period_ms > config->duration_ms ||
       config->amplitude_ramp_ms > config->duration_ms - config->period_ms ||
-      config->pwm_rise_ms == 0U || config->pwm_rise_ms > 2000U ||
-      config->pwm_fall_ms == 0U || config->pwm_fall_ms > 2000U ||
       config->max_pwm_permille == 0U || config->max_pwm_permille > 1000U ||
       atan2f(0.5F * config->line_length_m, config->ground_height_m) *
           Q2_DEG_PER_RAD > 20.0F) return false;
@@ -60,7 +57,6 @@ void ProblemQ2_Stop(ProblemQ2 *problem, ProblemQ2_Reason reason)
   problem->state = (reason == PROBLEM_Q2_TIME_UP) ? PROBLEM_Q2_FINISHED :
       (reason == PROBLEM_Q2_USER_STOP) ? PROBLEM_Q2_STOPPED : PROBLEM_Q2_FAULT;
   memset(problem->pwm, 0, sizeof(problem->pwm));
-  memset(problem->slew_duty, 0, sizeof(problem->slew_duty));
   memset(&problem->control_output, 0, sizeof(problem->control_output));
   PendulumControl_Reset(&problem->controller, 0.0F, 0.0F);
 }
@@ -97,34 +93,10 @@ bool ProblemQ2_Start(ProblemQ2 *problem, const ProblemQ2_Config *config,
   return true;
 }
 
-static float Approach(float current, float target, float rise, float fall)
+static void ProblemQ2_UpdatePwm(ProblemQ2 *problem)
 {
-  if (current < target) return fminf(current + rise, target);
-  return fmaxf(current - fall, target);
-}
-
-static void ProblemQ2_Slew(ProblemQ2 *problem, uint32_t elapsed_ms)
-{
-  const float rise = (float)problem->config.max_pwm_permille *
-      (float)elapsed_ms / (float)problem->config.pwm_rise_ms;
-  const float fall = (float)problem->config.max_pwm_permille *
-      (float)elapsed_ms / (float)problem->config.pwm_fall_ms;
-  const uint16_t *desired = problem->control_output.pwm_permille;
-  if (problem->slew_duty[0] > 0.0F && desired[1] > 0U) {
-    problem->slew_duty[0] = Approach(problem->slew_duty[0], 0.0F, rise, fall);
-    problem->slew_duty[1] = 0.0F;
-  } else if (problem->slew_duty[1] > 0.0F && desired[0] > 0U) {
-    problem->slew_duty[1] = Approach(problem->slew_duty[1], 0.0F, rise, fall);
-    problem->slew_duty[0] = 0.0F;
-  } else {
-    for (uint32_t side = 0U; side < 2U; ++side)
-      problem->slew_duty[side] = Approach(problem->slew_duty[side],
-          (float)desired[side], rise, fall);
-  }
-  for (uint32_t side = 0U; side < 2U; ++side)
-    problem->pwm[side] = (uint16_t)(problem->slew_duty[side] + 0.5F);
-  problem->pwm[2] = 0U;
-  problem->pwm[3] = 0U;
+  memcpy(problem->pwm, problem->control_output.pwm_permille,
+      sizeof(problem->pwm));
   const int sign = (problem->pwm[0] > 0U) ? 1 :
       (problem->pwm[1] > 0U) ? -1 : 0;
   if (sign != 0) {
@@ -184,15 +156,13 @@ void ProblemQ2_Step(ProblemQ2 *problem, uint32_t now_ms,
   problem->target_position_m = problem->config.ground_height_m * tanf(theta);
   problem->target_velocity_mps = problem->config.ground_height_m *
       problem->target_pitch_rate_dps * Q2_RAD_PER_DEG / (cosf(theta) * cosf(theta));
-  const float applied = (float)problem->pwm[0] - (float)problem->pwm[1];
   const PendulumControl_Input input = {
       .target_deg = {0.0F, problem->target_pitch_deg},
       .target_rate_dps = {0.0F, problem->target_pitch_rate_dps},
       .angle_deg = {roll_deg, pitch_deg},
       .rate_dps = {roll_rate_dps, pitch_rate_dps},
       .dt_s = (float)elapsed_ms * 0.001F,
-      .integrate = {false, fabsf(applied -
-          problem->control_output.axis_output[PENDULUM_AXIS_PITCH]) <= 2.0F}};
+      .integrate = {false, problem->config.pitch_pid.ki != 0.0F}};
   problem->pitch_integrating = input.integrate[PENDULUM_AXIS_PITCH];
   if (!PendulumControl_StepWithRates(&problem->controller, &input,
                                     &problem->control_output) ||
@@ -202,5 +172,5 @@ void ProblemQ2_Step(ProblemQ2 *problem, uint32_t now_ms,
   }
   if (-pitch_deg > problem->left_peak_deg) problem->left_peak_deg = -pitch_deg;
   if (pitch_deg > problem->right_peak_deg) problem->right_peak_deg = pitch_deg;
-  ProblemQ2_Slew(problem, elapsed_ms);
+  ProblemQ2_UpdatePwm(problem);
 }

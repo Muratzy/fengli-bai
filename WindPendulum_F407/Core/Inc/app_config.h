@@ -50,32 +50,31 @@
 /* Measured geometry, meters. The laser is coaxial with the pendulum rod.
  * Ground projection uses pivot height, not pivot-to-pendulum-center length. */
 #define APP_PIVOT_GROUND_HEIGHT_M     0.99F
-#define APP_PIVOT_PENDULUM_CENTER_M   0.67F
 #define APP_Q1_LINE_LENGTH_M          0.60F
-#define APP_Q1_DURATION_MS           15000U
+/* Q1 baseline period from the last full-duration trial. */
+#define APP_Q1_PERIOD_MS              1642U
+#define APP_Q1_DURATION_MS           25000U
 #define APP_Q1_TURN_RATE_DPS             2.0F
 #define APP_Q1_STOP_PITCH_DEG           25.0F
 #define APP_Q1_STOP_ROLL_DEG             8.0F
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
 #define APP_Q1_START_ANGLE_DEG           7.0F
-#define APP_Q1_PWM_MAX_PERMILLE        500U
-#define APP_Q1_PITCH_KP               32.75F
-#define APP_Q1_PITCH_KI                 1.0F
+#define APP_Q1_PWM_MAX_PERMILLE        850U
+#define APP_Q1_PITCH_KP               28.0F
+#define APP_Q1_PITCH_KI                 0.0F
 #define APP_Q1_PITCH_KD                 8.0F
 #define APP_Q1_RATE_FILTER_TAU_S        0.05F
 #define APP_Q1_INTEGRAL_LIMIT          150.0F
 
 /* Q2 trajectory PID, current bench candidate in PWM permille / degrees.
  * Qualification is pending; Roll remains disabled. */
-#define APP_Q2_DEFAULT_LENGTH_MM       600U
-#define APP_Q2_PERIOD_MS              1720U
-#define APP_Q2_AMPLITUDE_RAMP_MS      3440U
+#define APP_Q2_DEFAULT_LENGTH_MM       500U
+#define APP_Q2_PERIOD_MS              1610U
+#define APP_Q2_AMPLITUDE_RAMP_MS      (2U * APP_Q2_PERIOD_MS)
 #define APP_Q2_DURATION_MS           15000U
-#define APP_Q2_PWM_MAX_PERMILLE       1000U
-#define APP_Q2_PWM_RISE_MS             500U
-#define APP_Q2_PWM_FALL_MS             200U
+#define APP_Q2_PWM_MAX_PERMILLE        850U
 #define APP_Q2_PITCH_KP                 32.75F
-#define APP_Q2_PITCH_KI                  1.0F
+#define APP_Q2_PITCH_KI                  0.0F
 #define APP_Q2_PITCH_KD                  8.0F
 #define APP_Q2_RATE_FILTER_TAU_S         0.05F
 #define APP_Q2_INTEGRAL_LIMIT          150.0F

@@ -144,12 +144,12 @@ void Q1Swing_Step(Q1Swing *swing, uint32_t now_ms, float roll_deg,
 
   const PendulumControl_Input input = {
       .target_deg = {reference.target_roll_deg, reference.target_pitch_deg},
-      .target_rate_dps = {reference.target_roll_rate_dps,
-                          reference.target_pitch_rate_dps},
+      /* Use measured-rate damping for the Q1 comparison. */
+      .target_rate_dps = {0.0F, 0.0F},
       .angle_deg = {roll_deg, pitch_deg},
       .rate_dps = {0.0F, pitch_rate_dps},
       .dt_s = (float)elapsed_ms * 0.001F,
-      .integrate = {false, true}};
+      .integrate = {false, swing->controller.config.pitch_pid.ki != 0.0F}};
   swing->pitch_integrating = input.integrate[PENDULUM_AXIS_PITCH];
   if (!PendulumControl_StepWithRates(&swing->controller, &input,
                                       &swing->control_output) ||
