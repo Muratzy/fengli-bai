@@ -1,8 +1,8 @@
 # 风力摆 F407 固件
 
-对话接续先看根目录 [项目交接](../项目交接.md) 和 [协作与本地 Git 约定](../AGENTS.md)。按用户最新约定，仅在明确要求“本地提交”时调用 Git；GitHub 上传由用户另行要求。
+对话接续先看根目录 [项目交接](../项目交接.md) 和 [协作与本地 Git 约定](../AGENTS.md)。按本轮用户提供的 AGENTS.md，每完成一个独立部分并检查后主动本地提交；GitHub 上传由用户另行要求。
 
-项目使用天空星青春版STM32F407VET6，在STM32CubeIDE 1.19.0中构建；FreeRTOS版本202406.04 LTS。Q1端点换向程序和已验证基线仍保留。Q1～Q7编号及统一启动/停止/查询API已固定，Q1/Q2接入，Q3～Q7明确返回尚未实现。Q2 OLED页可选择30～60 cm长度并启动/停止Q2，完整Q1～Q7菜单尚未接入。Q2 60 cm PID仍在串口调试，周期幅度精度与重复性尚未达标。当前候选Kp/Ki/Kd=32.75/1/8、D滤波50 ms，2026-11-23 22:17已烧录校验，22:18只读核验PWM零/EN低，等待用户明确启动下一轮。上下电机始终禁用；各轮结果见根目录项目交接。
+项目使用天空星青春版STM32F407VET6，在STM32CubeIDE 1.19.0中构建；FreeRTOS版本202406.04 LTS。Q1已接入固定摆体坐标下的正弦角度/角速度参考和速率PID，Q2仍在串口调试；Q1/Q2统一启动/停止/查询API已固定，Q3～Q7明确返回尚未实现。Q2 OLED页可选择30～60 cm长度并启动/停止Q2，完整Q1～Q7菜单尚未接入。Q1/Q2的PID参数和周期幅度仍需实物试验验证，不能把15秒窗口结束当作题目通过。上下电机始终禁用；各轮结果见根目录项目交接。
 
 需求以根目录 [风力摆控制系统(B题).pdf](../风力摆控制系统(B题).pdf) 和用户确认的调整为准；训练题文档已删除，其附加验收项不再纳入项目。IMU 使用固定标定零偏，按用户要求取消上电静止校准；完整数据记录作为可选调试功能，电脑端串口采集已经可以按会话保存 CSV、原始字节和事件。
 
@@ -34,7 +34,7 @@ PB0 / ADC1_IN8 / I1 的电流换算、接线假设和标定见 [ADC电流检测]
 
 ## 菜单和状态
 
-根菜单源码包含 Live Status、IMU Data、Gyro Offsets、Display 和 About；IMU Data 下分 Attitude、Accelerometer、Gyroscope。Display 提供 OLED 对比度调节。状态页显示传感器在线状态、姿态角、加速度和陀螺仪原始值/换算值、温度及固定零偏。当前 `APP_OLED_ENABLED=0`，完整菜单未运行。
+根菜单源码包含 Live Status、IMU Data、Gyro Offsets、Display 和 About；IMU Data 下分 Attitude、Accelerometer、Gyroscope。Display 提供 OLED 对比度调节。状态页显示传感器在线状态、姿态角、加速度和陀螺仪原始值/换算值、温度及固定零偏。当前 `APP_Q2_UI_ENABLED=1`、`APP_OLED_ENABLED=1`，显示专用 Q2 页面，完整菜单未运行。
 
 IMU 任务以 500 Hz 为目标轮询数据。2026-11-23 按用户要求取消上电 5000 点静止校准，经中心和四方向姿态标定后固定使用三轴零偏 `0.31284/-0.08947/0.12095 °/s`，参数在 `app_config.h`。初始化及首次有效采样后直接融合，姿态使用扣除固定零偏后的陀螺仪积分与加速度倾角互补融合，并在快速运动时降低加速度权重。
 
@@ -44,11 +44,11 @@ IMU 任务以 500 Hz 为目标轮询数据。2026-11-23 按用户要求取消上
 
 任务链为 `imu -> fusion -> trajectory -> motor -> telemetry`，UI通过队列读取状态。题目模式当前输出58列CSV，PC用 `Tools/q1_trial.py` 采集Q1/Q2，Q2专用数据目录为 `数据记录/串口/Q2/`；旧 `serial_capture.py` 仍仅支持28列台架协议。Q2 CSV另附19列主机时间和换算值，字段及流程见 [电脑串口采集](电脑串口采集.md)。串口只接收，明确start/stop动作通过J-Link RAM命令口控制；默认observe不写命令。所有记录均为快照，不能声称MCU全采样率无丢失。
 
-统一任务API为 `PendulumApp_RequestProblemStart(id,&params)`、`PendulumApp_RequestProblemStop()`、`PendulumApp_GetProblemStatus(&status)`；题目注册/参数在 `problems/problem_api.h`，用法见 [项目逻辑框架](项目逻辑框架.md) 第2.2节。Q2当前目标60 cm，参考周期1720 ms、幅度增幅3440 ms、试验15秒；PID用角度误差和陀螺仪速度误差，输出受500 ms升/200 ms退斜坡及左右互锁限制。当前32.75/1/8候选等待实测；停止与故障均立即归零，Roll PID禁用输出和积分，上下电机未启用。
+统一任务API为 `PendulumApp_RequestProblemStart(id,&params)`、`PendulumApp_RequestProblemStop()`、`PendulumApp_GetProblemStatus(&status)`；题目注册/参数在 `problems/problem_api.h`，用法见 [项目逻辑框架](项目逻辑框架.md) 第2.3节。Q1/Q2均使用角度误差和陀螺仪速度误差，输出受500 ms升/200 ms退斜坡及左右互锁限制。当前Q1/Q2的32.75/1/8、D滤波50 ms为待实测起始候选；停止与故障均立即归零，Roll PID禁用输出和积分，上下电机未启用。
 
 2026-11-23 Q1 准备：用户测得万向节中心离地 0.99 m、到风力摆中心 0.67 m，并确认激光与摆杆同轴、沿左右方向往返摆动。地面光点位移满足 `x=0.99×tan(θ)`；50 cm 为两端总长，端点 ±25 cm 对应 Pitch=±14.1723°，Roll 目标为 0。0.67 m 用于简单摆近似周期估算约 1.642 s，不用它换算地面光点位置；实际刚体周期仍需实测。参数集中在 `app_config.h`，`ProblemQ1_DefaultConfig()` 提供左右对称参考轨迹，默认两周期平滑增幅（3.284 s）、15 s 观察窗口；周期与观察窗口分开，窗口到时不代表实测达标。
 
-最新 Q1 试验采用端点换向。用户已澄清摆体反作用运动方向：**左电机 PWM1 开启让摆体向右动，右电机 PWM2 开启让摆体向左动**；角速度接近零且已偏离中心时换向。启动允许Roll/Pitch各在±7°内，不要求静止或低角速度；当前占空比0%～100%，从0升到100%用500 ms。正常换向先用200 ms将旧侧从100%降至零，再让另一侧从零渐升，始终左右互锁。参数为 `APP_Q1_START_ANGLE_DEG`、`APP_Q1_PWM_START_PERMILLE/MAX_PERMILLE/RISE_MS/FALL_MS`。`problems/q1_swing.c` 根据角度和角速度估算摆幅，到目标能量时降零滑行，幅度不足再渐升补力；`problem_q1.c` 正弦参考与 PID 模块暂不参与本轮执行。默认上电待机，电机 EN 低、PWM零，收到一次启动命令才允许 MotorTask 输出左右通道；上/下电机恒零。每次15秒结束、丝印KEY3停止及任何故障立即清零，不等待斜坡；故障锁定后需重新明确启动。已验证的20%～80%/升1000 ms/退400 ms版本已保存为本地恢复包，本次修改不覆盖它。
+最新 Q1 算法使用固定三维安装坐标变换后的 Roll/Pitch 基准：保留 `APP_IMU_FRAME_*`、固定陀螺仪零偏、Roll/Pitch 零位和 `H=0.99 m` 地面投影参数。`problem_q1.c` 生成50 cm总长对应的正弦角度/角速度参考，`q1_swing.c` 用双轴控制器的速率PID（Q1只启用Pitch）计算输出；正Pitch通过PWM1使摆体向右，负Pitch通过PWM2使摆体向左。输出沿用0～100%、500 ms升速、200 ms退速和先退零后换向互锁，MotorTask仍是唯一执行器写入者。Q1启动允许Roll/Pitch各在±7°内，不要求静止；15秒结束、KEY3、数据过期、超角和其他故障立即清零。当前Q1 PID参数为32.75/1/8、D滤波50 ms起始候选，只完成主机测试和本地构建验证，尚未烧录或实物启动；地面线长仍需激光尺/录像验证。
 
 用户要求每轮得到明确启动指令才运行。下一轮Q2使用 `python -B -X utf8 Tools/q1_trial.py --problem q2 --length-cm 60 --action start --duration 20`，先确认±7°范围、数据有效、PWM/EN关闭，再配置600 mm并发一次启动；先看数据可用相同参数加 `--action observe --duration 2`，停止用 `--action stop --duration 2`。现有58列协议保持原47列顺序并附加11列，PC可兼容旧47列会话。工具保存原始字节、CSV和含分析的session.json；遇到板端重启或启动后超过0.5秒无有效遥测即中止并尝试停止，不自动重试。正常uint32回绕不算重启；没有结束、复位或采集失败的会话不用于调参。最新参数、烧录与实测证据见根目录 [项目交接](../项目交接.md)。
 

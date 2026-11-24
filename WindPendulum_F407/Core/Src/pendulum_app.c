@@ -390,8 +390,24 @@ static void TrajectoryTask(void *argument)
       command.q1_left_peak_deg = swing.left_peak_deg;
       command.q1_right_peak_deg = swing.right_peak_deg;
       command.q1_run_ms = (swing.state == Q1_SWING_IDLE) ? 0U : now - swing.started_ms;
-      command.target_pitch_deg = (float)swing.direction *
-          atan2f(0.5F * APP_Q1_LINE_LENGTH_M, APP_PIVOT_GROUND_HEIGHT_M) * 57.2957795F;
+      command.target_roll_deg = swing.target_roll_deg;
+      command.target_pitch_deg = swing.target_pitch_deg;
+      command.q1_target_position_m = swing.target_position_m;
+      command.q1_target_velocity_mps = swing.target_velocity_mps;
+      command.target_pitch_rate_dps = swing.target_pitch_rate_dps;
+      command.filtered_pitch_rate_error_dps =
+          swing.controller.axis_pid[PENDULUM_AXIS_PITCH].derivative;
+      command.pitch_integrating = swing.pitch_integrating ? 1U : 0U;
+      command.pitch_kp = swing.controller.config.pitch_pid.kp;
+      command.pitch_ki = swing.controller.config.pitch_pid.ki;
+      command.pitch_kd = swing.controller.config.pitch_pid.kd;
+      command.reference_period_ms = swing.reference.config.swing_period_ms;
+      command.reference_ramp_ms = swing.reference.config.startup_ramp_ms;
+      memcpy(command.pid_p, swing.control_output.p, sizeof(command.pid_p));
+      memcpy(command.pid_i, swing.control_output.i, sizeof(command.pid_i));
+      memcpy(command.pid_d, swing.control_output.d, sizeof(command.pid_d));
+      memcpy(command.pid_output, swing.control_output.axis_output,
+          sizeof(command.pid_output));
       command.target_length_mm = ProblemApi_DefaultParams(PROBLEM_Q1).line_length_mm;
     }
     command.mode = (command.q1_state == Q1_SWING_RUNNING) ?

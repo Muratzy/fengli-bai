@@ -1,123 +1,94 @@
 #include "problems/q1_swing.h"
+#include "app_config.h"
+
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 
-static void CheckOutput(const Q1Swing *s)
+static void CheckOutput(const Q1Swing *swing)
 {
-  assert(s->pwm[2] == 0U && s->pwm[3] == 0U);
-  assert(s->pwm[0] <= 1000U && s->pwm[1] <= 1000U);
-  assert(s->pwm[0] == 0U || s->pwm[1] == 0U);
+  assert(swing->pwm[0] <= APP_Q1_PWM_MAX_PERMILLE);
+  assert(swing->pwm[1] <= APP_Q1_PWM_MAX_PERMILLE);
+  assert(swing->pwm[2] == 0U && swing->pwm[3] == 0U);
+  assert(swing->pwm[0] == 0U || swing->pwm[1] == 0U);
 }
 
-static void TestTurnsAndCoast(void)
+static void TestReferenceAndPidPath(void)
 {
-  Q1Swing s = {0};
-  assert(Q1Swing_Start(&s, 0U, 0.0F, 0.0F, 0.0F));
-  Q1Swing_Step(&s, 2U, 0.0F, 0.0F, 0.0F, true, false);
-  assert(s.switches == 0U && s.pwm[0] == 4U);
-  assert(s.pwm[1] == 0U); /* PWM1, the left motor, moves right. */
-  for (uint32_t ms = 4U; ms < 1200U; ms += 2U)
-    Q1Swing_Step(&s, ms, 0.0F, (float)ms * (8.0F / 1200.0F), 12.0F, true, false);
-  Q1Swing_Step(&s, 1200U, 0.0F, 8.0F, 1.5F, true, false);
-  assert(s.switches == 1U && s.direction == -1);
-  assert(s.pwm[0] > 0U && s.pwm[0] < 1000U && s.pwm[1] == 0U);
-  Q1Swing_Step(&s, 1202U, 0.0F, 8.0F, 0.2F, true, false);
-  assert(s.switches == 1U); /* Near-zero noise cannot switch back. */
-  for (uint32_t ms = 1204U; ms < 2800U; ms += 2U) {
-    Q1Swing_Step(&s, ms, 0.0F, 8.0F - (float)(ms - 1200U) * 0.01F,
-                 -12.0F, true, false);
-    CheckOutput(&s);
-    if (ms == 1398U) assert(s.pwm[0] == 0U && s.pwm[1] == 0U);
-    if (ms == 1400U) assert(s.pwm[0] == 0U && s.pwm[1] == 4U);
-    if (ms == 1898U) assert(s.pwm[1] == 1000U);
-  }
-  Q1Swing_Step(&s, 2800U, 0.0F, -8.0F, -1.5F, true, false);
-  assert(s.switches == 2U && s.direction == 1);
-  CheckOutput(&s);
-  Q1Swing_Step(&s, 2802U, 0.0F, -14.5F, 0.0F, true, false);
-  assert(!s.boosting);
-  for (uint32_t ms = 2804U; ms <= 3202U; ms += 2U) {
-    Q1Swing_Step(&s, ms, 0.0F, -14.5F, 0.0F, true, false);
-    CheckOutput(&s);
-  }
-  assert(s.pwm[0] == 0U && s.pwm[1] == 0U);
-}
+  Q1Swing swing = {0};
+  assert(Q1Swing_Start(&swing, 100U, 0.0F, 0.0F, 0.0F));
+  assert(swing.state == Q1_SWING_RUNNING);
+  assert(swing.reference.config.ground_height_m == APP_PIVOT_GROUND_HEIGHT_M);
+  assert(swing.controller.config.disabled_axis_mask == PENDULUM_DISABLE_ROLL);
 
-static void TestRampAndImmediateStop(void)
-{
-  Q1Swing s = {0};
-  assert(Q1Swing_Start(&s, 0U, 0.0F, 0.0F, 0.0F));
-  Q1Swing_Step(&s, 0U, 0.0F, 0.0F, 0.0F, true, false);
-  assert(s.pwm[0] == 0U);
+  Q1Swing_Step(&swing, 100U, 0.0F, 0.0F, 0.0F, true, false);
+  assert(fabsf(swing.target_pitch_deg) < 0.001F);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
+
   uint16_t previous = 0U;
-  for (uint32_t ms = 1U; ms <= 500U; ++ms) {
-    Q1Swing_Step(&s, ms, 0.0F, 0.0F, 0.0F, true, false);
-    CheckOutput(&s);
-    assert(s.pwm[0] >= previous && s.pwm[0] - previous <= 2);
-    if (ms < 500U) assert(s.pwm[0] < 1000U);
-    previous = s.pwm[0];
+  for (uint32_t now = 102U; now <= 600U; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, 0.0F, 0.0F, true, false);
+    CheckOutput(&swing);
+    assert(swing.pwm[0] >= previous || swing.pwm[1] > 0U);
+    previous = swing.pwm[0];
   }
-  assert(s.pwm[0] == 1000U);
-  Q1Swing_Step(&s, 502U, 0.0F, 0.0F, 0.0F, true, true);
-  assert(s.reason == Q1_SWING_USER_STOP && s.pwm[0] == 0U);
-  assert(Q1Swing_Start(&s, 2000U, 0.0F, 0.0F, 0.0F));
-  Q1Swing_Step(&s, 2000U, 0.0F, 0.0F, 0.0F, true, false);
-  for (uint32_t ms = 2002U; ms <= 2500U; ms += 2U)
-    Q1Swing_Step(&s, ms, 0.0F, 0.0F, 0.0F, true, false);
-  assert(s.pwm[0] == 1000U);
-  Q1Swing_Step(&s, 2502U, 0.0F, 26.0F, 0.0F, true, false);
-  assert(s.reason == Q1_SWING_ANGLE_LIMIT && s.pwm[0] == 0U);
+  assert(swing.target_pitch_deg > 0.0F);
+  assert(swing.target_pitch_rate_dps != 0.0F);
+  assert(swing.target_position_m > 0.0F);
+  assert(swing.target_velocity_mps > 0.0F);
+  assert(swing.control_output.axis_output[1] > 0.0F);
+  assert(swing.pwm[0] > 0U && swing.pwm[1] == 0U);
+
+  bool saw_negative_reference = false;
+  bool saw_zero_break = false;
+  for (uint32_t now = 602U; now <= 1800U; now += 2U) {
+    const uint16_t old_left = swing.pwm[0];
+    Q1Swing_Step(&swing, now, 0.0F, 0.0F, 0.0F, true, false);
+    CheckOutput(&swing);
+    if (swing.target_pitch_deg < 0.0F) saw_negative_reference = true;
+    if (old_left > 0U && swing.pwm[0] == 0U && swing.pwm[1] == 0U) {
+      saw_zero_break = true;
+    }
+  }
+  assert(saw_negative_reference);
+  assert(saw_zero_break || swing.pwm[1] > 0U);
 }
 
-static void TestLimits(void)
+static void TestSafetyAndTimeout(void)
 {
-  Q1Swing s = {0};
-  assert(!Q1Swing_Start(&s, 0U, 0.0F, 7.01F, 0.0F));
-  assert(s.reason == Q1_SWING_NOT_CENTERED);
-  assert(Q1Swing_Start(&s, 0U, 6.9F, -6.9F, 4.0F));
-  Q1Swing_Stop(&s, Q1_SWING_USER_STOP);
-  assert(Q1Swing_Start(&s, 0U, 0.0F, 0.0F, 0.0F));
-  Q1Swing_Step(&s, 21U, 0.0F, 0.0F, 0.0F, true, false);
-  assert(s.reason == Q1_SWING_SAMPLE_STALE);
-  assert(Q1Swing_Start(&s, 100U, 0.0F, 0.0F, 0.0F));
-  Q1Swing_Step(&s, 102U, 0.0F, 26.0F, 0.0F, true, false);
-  assert(s.reason == Q1_SWING_ANGLE_LIMIT);
-  assert(Q1Swing_Start(&s, 200U, 0.0F, 0.0F, 0.0F));
-  Q1Swing_Step(&s, 202U, 0.0F, 0.0F, 0.0F, true, true);
-  assert(s.reason == Q1_SWING_USER_STOP);
-  assert(Q1Swing_Start(&s, 300U, 0.0F, 0.0F, 0.0F));
-  for (uint32_t ms = 302U; ms <= 2802U; ms += 2U)
-    Q1Swing_Step(&s, ms, 0.0F, 0.0F, 0.0F, true, false);
-  assert(s.reason == Q1_SWING_NO_TURN);
-  CheckOutput(&s);
-}
+  Q1Swing swing = {0};
+  assert(!Q1Swing_Start(&swing, 0U, 0.0F, 7.01F, 0.0F));
+  assert(swing.reason == Q1_SWING_NOT_CENTERED);
 
-static void TestFullWindow(uint32_t start)
-{
-  Q1Swing s = {0};
-  assert(Q1Swing_Start(&s, start, 0.0F, 0.0F, 0.0F));
-  /* Representative under-target oscillation over the whole window. */
-  for (uint32_t t = 2U; t <= 15000U; t += 2U) {
-    const float phase = (float)t * 0.001F * 6.2831853F / 1.64F;
-    Q1Swing_Step(&s, start + t, 0.0F, 8.0F * sinf(phase),
-                 8.0F * (6.2831853F / 1.64F) * cosf(phase), true, false);
-    CheckOutput(&s);
-    if (t < 15000U) assert(s.state == Q1_SWING_RUNNING);
+  assert(Q1Swing_Start(&swing, 0U, 0.0F, 0.0F, 0.0F));
+  Q1Swing_Step(&swing, 21U, 0.0F, 0.0F, 0.0F, true, false);
+  assert(swing.reason == Q1_SWING_SAMPLE_STALE && swing.pwm[0] == 0U);
+
+  assert(Q1Swing_Start(&swing, 100U, 0.0F, 0.0F, 0.0F));
+  Q1Swing_Step(&swing, 102U, 0.0F, 26.0F, 0.0F, true, false);
+  assert(swing.reason == Q1_SWING_ANGLE_LIMIT && swing.pwm[0] == 0U);
+
+  assert(Q1Swing_Start(&swing, 200U, 0.0F, 0.0F, 0.0F));
+  Q1Swing_Step(&swing, 202U, 0.0F, 0.0F, 0.0F, true, true);
+  assert(swing.reason == Q1_SWING_USER_STOP);
+
+  assert(Q1Swing_Start(&swing, UINT32_MAX - 500U, 0.0F, 0.0F, 0.0F));
+  for (uint32_t elapsed = 2U; elapsed < 15000U; elapsed += 2U) {
+    Q1Swing_Step(&swing, (UINT32_MAX - 500U) + elapsed,
+                 0.0F, 0.0F, 0.0F, true, false);
   }
-  assert(s.reason == Q1_SWING_TIME_UP && s.switches > 10U);
-  CheckOutput(&s);
-  Q1Swing_Step(&s, start + 15002U, 0.0F, 0.0F, 0.0F, true, false);
-  assert(s.state == Q1_SWING_FINISHED); /* No automatic restart. */
+  assert(swing.state == Q1_SWING_RUNNING);
+  Q1Swing_Step(&swing, (UINT32_MAX - 500U) + 15000U,
+               0.0F, 0.0F, 0.0F, true, false);
+  assert(swing.state == Q1_SWING_FINISHED);
+  assert(swing.reason == Q1_SWING_TIME_UP);
+  CheckOutput(&swing);
 }
 
 int main(void)
 {
-  TestTurnsAndCoast();
-  TestRampAndImmediateStop();
-  TestLimits();
-  TestFullWindow(0U);
-  TestFullWindow(UINT32_MAX - 200U);
-  puts("Q1 swing tests passed");
+  TestReferenceAndPidPath();
+  TestSafetyAndTimeout();
+  puts("Q1 trajectory PID tests passed");
   return 0;
 }

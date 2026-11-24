@@ -40,6 +40,8 @@ typedef struct {
   float target_velocity_mps;
   float target_roll_deg;
   float target_pitch_deg;
+  float target_roll_rate_dps;
+  float target_pitch_rate_dps;
   bool complete;
 } ProblemQ1_Output;
 

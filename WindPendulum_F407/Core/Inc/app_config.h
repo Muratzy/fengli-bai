@@ -58,10 +58,14 @@
 #define APP_Q1_STOP_ROLL_DEG             8.0F
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
 #define APP_Q1_START_ANGLE_DEG           7.0F
-#define APP_Q1_PWM_START_PERMILLE        0U
 #define APP_Q1_PWM_MAX_PERMILLE       1000U
 #define APP_Q1_PWM_RISE_MS             500U
 #define APP_Q1_PWM_FALL_MS             200U
+#define APP_Q1_PITCH_KP               32.75F
+#define APP_Q1_PITCH_KI                 1.0F
+#define APP_Q1_PITCH_KD                 8.0F
+#define APP_Q1_RATE_FILTER_TAU_S        0.05F
+#define APP_Q1_INTEGRAL_LIMIT          150.0F
 
 /* Q2 trajectory PID, current bench candidate in PWM permille / degrees.
  * Qualification is pending; Roll remains disabled. */
@@ -78,9 +82,8 @@
 #define APP_Q2_RATE_FILTER_TAU_S         0.05F
 #define APP_Q2_INTEGRAL_LIMIT          150.0F
 
-#if (APP_Q1_PWM_START_PERMILLE >= APP_Q1_PWM_MAX_PERMILLE) || \
-    (APP_Q1_PWM_MAX_PERMILLE > 1000U)
-#error "Q1 PWM requires 0 <= start < maximum <= 1000 permille."
+#if (APP_Q1_PWM_MAX_PERMILLE == 0U) || (APP_Q1_PWM_MAX_PERMILLE > 1000U)
+#error "Q1 PWM maximum must be within 1..1000 permille."
 #endif
 
 #if (APP_Q1_PWM_RISE_MS < 1U) || (APP_Q1_PWM_RISE_MS > 2000U) || \

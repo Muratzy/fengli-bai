@@ -112,7 +112,7 @@ def write_q2_fields(directory):
             elif name.endswith('_adc') or name.endswith('_raw'): unit = 'raw count'
             description = 'Host-derived value' if name in Q2_EXTRA_FIELDS else 'MCU telemetry snapshot'
             if name == 'problem_id': description = '1=Q1, 2=Q2; explicit selected task'
-            if name == 'q1_switches': description = 'Q2: applied PWM polarity changes, not mechanical turns'
+            if name == 'q1_switches': description = 'Applied PWM polarity changes; legacy Q1 rows used endpoint decisions'
             if name == 'pitch_integrating': description = '1=integrating; 0=frozen during slew/disable/stop'
             writer.writerow([name, unit, description])
 
@@ -212,7 +212,9 @@ def q2_cycle_metrics(active):
 
 def analyze(rows, capture_error=None):
     active = [r for r in rows if r['q1_state'] == 1]
-    pid_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 for r in rows)
+    pid_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 or
+                    (r.get('problem_id') == 1 and r.get('pitch_kp_milli', 0) != 0)
+                    for r in rows)
     restarts = [{'previous_ms': a['time_ms'], 'current_ms': b['time_ms']}
                 for a, b in zip(rows, rows[1:])
                 if board_time_restarted(a['time_ms'], b['time_ms'])]
@@ -220,8 +222,11 @@ def analyze(rows, capture_error=None):
     result = {'rows': len(rows), 'active_rows': len(active), 'full_sampling_rate': False,
               'mcu_time_restarts': len(restarts), 'time_restart_events': restarts,
               'terminal_state_observed': terminal_observed,
-              'controller': 'q2_trajectory_pid' if pid_trial else 'q1_endpoint',
-              'switch_count_meaning': 'applied_pwm_polarity_changes' if pid_trial else 'endpoint_decisions',
+              'controller': ('q2_trajectory_pid' if any(r['mode'] == 8 or
+                  r.get('problem_id') == 2 for r in rows) else
+                  'q1_reference_pid' if pid_trial else 'q1_legacy_endpoint'),
+              'switch_count_meaning': ('applied_pwm_polarity_changes'
+                  if pid_trial else 'legacy_endpoint_decisions'),
               'valid_for_tuning': terminal_observed and not restarts and not capture_error}
     if rows:
         result['last_state'] = rows[-1]['q1_state']
@@ -245,8 +250,11 @@ def analyze(rows, capture_error=None):
             'coast_rows': sum(r['pwm1_applied_permille'] == r['pwm2_applied_permille'] == 0 for r in active),
             'both_on_rows': sum(bool(r['pwm1_applied_permille'] and r['pwm2_applied_permille']) for r in active),
             'note': 'Angle-derived estimates only; a ruler/ground trace must verify actual length and linearity. ' +
-                    ('Q2 tracks a smooth angle trajectory using PID. ' if pid_trial else
-                     'Q1 uses endpoint switching and turn/coast thresholds. ') +
+                    ('Q2 tracks a smooth angle trajectory using PID. '
+                     if result['controller'] == 'q2_trajectory_pid' else
+                     'Q1 follows a fixed-coordinate reference with rate PID. '
+                     if pid_trial else
+                     'Q1 uses the legacy endpoint switching and turn/coast thresholds. ') +
                     'Left motor PWM1 moves the pendulum right; right motor PWM2 moves it left.'})
         if pid_trial:
             errors = [(r['target_pitch_cdeg'] - r['pitch_cdeg']) / 100 for r in active]

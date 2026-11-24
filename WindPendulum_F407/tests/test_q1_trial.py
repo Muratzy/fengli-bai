@@ -136,6 +136,20 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(report['right_on_rows'], 1)
         self.assertTrue(report['valid_for_tuning'])
 
+    def test_q1_reference_pid_is_reported(self):
+        rows = [make_row(mode=3, problem_id=1, q1_state=1,
+                         pitch_kp_milli=32750, pitch_ki_milli=1000,
+                         pitch_kd_milli=8000),
+                make_row(mode=3, problem_id=1, q1_state=2, q1_reason=1,
+                         time_ms=5000, pitch_kp_milli=32750,
+                         pitch_ki_milli=1000, pitch_kd_milli=8000)]
+        report = trial.analyze(rows)
+        self.assertEqual(report['controller'], 'q1_reference_pid')
+        self.assertEqual(report['switch_count_meaning'],
+                         'applied_pwm_polarity_changes')
+        self.assertIn('Q1 follows a fixed-coordinate reference', report['note'])
+        self.assertNotIn('Q2 tracks', report['note'])
+
     def test_restart_invalidates_analysis_but_rollover_does_not(self):
         report = trial.analyze([make_row(time_ms=798141, q1_state=1),
                                 make_row(time_ms=60)])

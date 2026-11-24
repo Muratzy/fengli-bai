@@ -148,8 +148,10 @@ bool ProblemQ1_Step(ProblemQ1 *problem, uint32_t now_ms,
   target_angle_deg = angle_rad * PROBLEM_Q1_DEG_PER_RAD;
   if (problem->config.axis == PROBLEM_Q1_AXIS_ROLL) {
     output->target_roll_deg = target_angle_deg;
+    output->target_roll_rate_dps = angle_rate * PROBLEM_Q1_DEG_PER_RAD;
   } else {
     output->target_pitch_deg = target_angle_deg;
+    output->target_pitch_rate_dps = angle_rate * PROBLEM_Q1_DEG_PER_RAD;
   }
   return true;
 }
