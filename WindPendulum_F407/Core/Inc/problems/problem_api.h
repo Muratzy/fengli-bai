@@ -22,7 +22,7 @@ typedef enum {
 } ProblemStatusCode;
 
 typedef struct {
-  uint32_t line_length_mm; /* Q1 fixed 500; Q2 300..600. */
+  uint32_t line_length_mm; /* Q1 fixed 600 for this trial; Q2 300..600. */
   uint32_t direction_deg; /* Reserved for Q3. Up=0, clockwise positive. */
   uint32_t radius_mm; /* Reserved for Q5/Q6. */
 } ProblemParams;

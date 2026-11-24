@@ -25,7 +25,7 @@ int main(void)
   assert(ProblemApi_ValidateStart(PROBLEM_Q2, &params) == PROBLEM_REQUEST_INVALID_PARAMS);
   assert(ProblemApi_ValidateStart(PROBLEM_Q1, &params) == PROBLEM_REQUEST_INVALID_PARAMS);
   params = ProblemApi_DefaultParams(PROBLEM_Q1);
-  assert(params.line_length_mm == 500U);
+  assert(params.line_length_mm == 600U);
   assert(ProblemApi_ValidateStart(PROBLEM_Q1, &params) == PROBLEM_REQUEST_ACCEPTED);
   assert(ProblemApi_StartCommand(PROBLEM_Q1) == 0x5131474FU);
   assert(ProblemApi_StartCommand(PROBLEM_Q2) == 0x5132474FU);

@@ -94,13 +94,13 @@ static void TestQ1TrajectoryAndPreconditions(void)
   assert(fabsf(output.target_position_m) < 0.001F);
   assert(fabsf(output.target_velocity_mps) < 0.001F);
   assert(ProblemQ1_Step(&problem, 4600U, &output));
-  assert(fabsf(output.target_position_m - 0.25F) < 0.0001F);
-  assert(fabsf(output.target_pitch_deg - 14.17234F) < 0.001F);
+  assert(fabsf(output.target_position_m - 0.30F) < 0.0001F);
+  assert(fabsf(output.target_pitch_deg - 16.85840F) < 0.001F);
   assert(fabsf(output.target_roll_deg) < 0.0001F);
   assert(fabsf(output.target_velocity_mps) < 0.0001F);
   assert(ProblemQ1_Step(&problem, 5600U, &output));
-  assert(fabsf(output.target_position_m + 0.25F) < 0.0001F);
-  assert(fabsf(output.target_pitch_deg + 14.17234F) < 0.001F);
+  assert(fabsf(output.target_position_m + 0.30F) < 0.0001F);
+  assert(fabsf(output.target_pitch_deg + 16.85840F) < 0.001F);
   assert(ProblemQ1_Step(&problem, 5100U, &output));
   assert(fabsf(output.target_position_m) < 0.0001F);
   assert(output.target_velocity_mps < 0.0F);
@@ -119,10 +119,10 @@ static void TestQ1MeasuredGeometryAndValidation(void)
   assert(config.startup_ramp_ms == 3284U);
   assert(config.axis == PROBLEM_Q1_AXIS_PITCH);
   assert(ProblemQ1_Validate(&config));
-  /* A 50 cm trace is +/-25 cm, not 50 cm to one side. */
-  config.max_angle_deg = 14.0F;
+  /* A 60 cm trace is +/-30 cm, not 60 cm to one side. */
+  config.max_angle_deg = 16.0F;
   assert(!ProblemQ1_Validate(&config));
-  config.max_angle_deg = 14.2F;
+  config.max_angle_deg = 16.9F;
   assert(ProblemQ1_Validate(&config));
   float left = 0.0F;
   float right = 0.0F;
@@ -131,12 +131,12 @@ static void TestQ1MeasuredGeometryAndValidation(void)
   {
     assert(ProblemQ1_Step(&problem, (UINT32_MAX - 500U) + elapsed, &output));
     assert(isfinite(output.target_velocity_mps));
-    assert(fabsf(output.target_pitch_deg) <= 14.173F);
+    assert(fabsf(output.target_pitch_deg) <= 16.859F);
     assert(fabsf(output.target_roll_deg) < 0.0001F);
     if (output.target_position_m < left) left = output.target_position_m;
     if (output.target_position_m > right) right = output.target_position_m;
   }
-  assert(left < -0.249F && right > 0.249F);
+  assert(left < -0.299F && right > 0.299F);
   config.ground_height_m = 0.0F;
   assert(!ProblemQ1_Validate(&config));
   config = ProblemQ1_DefaultConfig();
@@ -161,7 +161,7 @@ static void TestQ1PolarityAndVelocity(void)
   config.axis = PROBLEM_Q1_AXIS_ROLL;
   assert(ProblemQ1_Start(&problem, &config, 0U, true, true) == PROBLEM_Q1_OK);
   assert(ProblemQ1_Step(&problem, 4500U, &output));
-  assert(fabsf(output.target_roll_deg + 14.17234F) < 0.001F);
+  assert(fabsf(output.target_roll_deg + 16.85840F) < 0.001F);
   assert(fabsf(output.target_pitch_deg) < 0.0001F);
   /* The reported ground velocity includes both the ramp derivative and tan. */
   for (uint32_t time = 100U; time <= 5000U; time += 37U)

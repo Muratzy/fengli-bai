@@ -51,7 +51,7 @@
  * Ground projection uses pivot height, not pivot-to-pendulum-center length. */
 #define APP_PIVOT_GROUND_HEIGHT_M     0.99F
 #define APP_PIVOT_PENDULUM_CENTER_M   0.67F
-#define APP_Q1_LINE_LENGTH_M          0.50F
+#define APP_Q1_LINE_LENGTH_M          0.60F
 #define APP_Q1_DURATION_MS           15000U
 #define APP_Q1_TURN_RATE_DPS             2.0F
 #define APP_Q1_STOP_PITCH_DEG           25.0F
