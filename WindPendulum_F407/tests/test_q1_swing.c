@@ -13,6 +13,13 @@ static void CheckOutput(const Q1Swing *swing)
   assert(swing->pwm[0] == 0U || swing->pwm[1] == 0U);
 }
 
+static void CheckDirectOutput(const Q1Swing *swing)
+{
+  CheckOutput(swing);
+  assert(swing->pwm[0] == swing->control_output.pwm_permille[0]);
+  assert(swing->pwm[1] == swing->control_output.pwm_permille[1]);
+}
+
 static void TestReferenceAndPidPath(void)
 {
   Q1Swing swing = {0};
@@ -25,12 +32,9 @@ static void TestReferenceAndPidPath(void)
   assert(fabsf(swing.target_pitch_deg) < 0.001F);
   assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
 
-  uint16_t previous = 0U;
   for (uint32_t now = 102U; now <= 600U; now += 2U) {
     Q1Swing_Step(&swing, now, 0.0F, 0.0F, 0.0F, true, false);
-    CheckOutput(&swing);
-    assert(swing.pwm[0] >= previous || swing.pwm[1] > 0U);
-    previous = swing.pwm[0];
+    CheckDirectOutput(&swing);
   }
   assert(swing.target_pitch_deg > 0.0F);
   assert(swing.target_pitch_rate_dps != 0.0F);
@@ -40,18 +44,15 @@ static void TestReferenceAndPidPath(void)
   assert(swing.pwm[0] > 0U && swing.pwm[1] == 0U);
 
   bool saw_negative_reference = false;
-  bool saw_zero_break = false;
+  bool saw_opposite_output = false;
   for (uint32_t now = 602U; now <= 1800U; now += 2U) {
-    const uint16_t old_left = swing.pwm[0];
     Q1Swing_Step(&swing, now, 0.0F, 0.0F, 0.0F, true, false);
-    CheckOutput(&swing);
+    CheckDirectOutput(&swing);
     if (swing.target_pitch_deg < 0.0F) saw_negative_reference = true;
-    if (old_left > 0U && swing.pwm[0] == 0U && swing.pwm[1] == 0U) {
-      saw_zero_break = true;
-    }
+    if (swing.pwm[1] > 0U) saw_opposite_output = true;
   }
   assert(saw_negative_reference);
-  assert(saw_zero_break || swing.pwm[1] > 0U);
+  assert(saw_opposite_output);
 }
 
 static void TestSafetyAndTimeout(void)
@@ -90,41 +91,20 @@ static void TestDutyLimitAndDirectionChange(void)
   Q1Swing swing = {0};
   assert(Q1Swing_Start(&swing, 0U, 0.0F, 0.0F, 0.0F));
 
-  for (uint32_t now = 10U; now <= 300U; now += 10U) {
-    Q1Swing_Step(&swing, now, 0.0F, -24.0F, -140.0F, true, false);
-    CheckOutput(&swing);
-    assert(swing.control_output.pwm_permille[0] == 800U);
-    assert(swing.pwm[0] == (uint16_t)((800U * now + 150U) / 300U));
-  }
+  Q1Swing_Step(&swing, 2U, 0.0F, -24.0F, -140.0F, true, false);
+  CheckDirectOutput(&swing);
+  assert(swing.pwm[0] == APP_Q1_PWM_MAX_PERMILLE && swing.pwm[1] == 0U);
 
-  uint32_t now = 300U;
-  do {
-    now += 10U;
-    Q1Swing_Step(&swing, now, 0.0F, 24.0F, 140.0F, true, false);
-    CheckOutput(&swing);
-    assert(now <= 400U);
-  } while (swing.control_output.pwm_permille[1] == 0U);
-  assert(swing.pwm[0] > 0U && swing.pwm[1] == 0U);
-
-  do {
-    const uint16_t previous = swing.pwm[0];
-    now += 2U;
-    Q1Swing_Step(&swing, now, 0.0F, 24.0F, 140.0F, true, false);
-    assert(swing.pwm[0] == (previous > 16U ? previous - 16U : 0U));
-    assert(swing.pwm[1] == 0U);
-  } while (swing.pwm[0] > 0U);
-
-  const uint32_t zero_since = now;
-  for (uint32_t elapsed = 2U; elapsed < 10U; elapsed += 2U) {
-    Q1Swing_Step(&swing, zero_since + elapsed, 0.0F, 24.0F, 140.0F, true, false);
-    assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
-    assert(!swing.pitch_integrating);
-  }
-  Q1Swing_Step(&swing, zero_since + 10U, 0.0F, 24.0F, 140.0F, true, false);
-  assert(swing.pwm[0] == 0U && swing.pwm[1] == 5U);
+  Q1Swing_Step(&swing, 4U, 0.0F, 24.0F, 140.0F, true, false);
+  CheckDirectOutput(&swing);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == APP_Q1_PWM_MAX_PERMILLE);
   assert(swing.switches == 1U);
 
-  Q1Swing_Step(&swing, zero_since + 12U, 0.0F, 24.0F, 140.0F, true, true);
+  Q1Swing_Step(&swing, 6U, 0.0F, 0.0F, 0.0F, true, false);
+  CheckDirectOutput(&swing);
+  assert(swing.pwm[1] < APP_Q1_PWM_MAX_PERMILLE);
+
+  Q1Swing_Step(&swing, 8U, 0.0F, 24.0F, 140.0F, true, true);
   assert(swing.reason == Q1_SWING_USER_STOP);
   assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
 }

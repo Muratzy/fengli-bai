@@ -58,11 +58,7 @@
 #define APP_Q1_STOP_ROLL_DEG             8.0F
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
 #define APP_Q1_START_ANGLE_DEG           7.0F
-#define APP_Q1_PWM_MAX_PERMILLE        800U
-/* Ramp times are between zero and the configured duty limit. */
-#define APP_Q1_PWM_RISE_MS             300U
-#define APP_Q1_PWM_FALL_MS             100U
-#define APP_Q1_PWM_SWITCH_OFF_MS        10U
+#define APP_Q1_PWM_MAX_PERMILLE        400U
 #define APP_Q1_PITCH_KP               32.75F
 #define APP_Q1_PITCH_KI                 1.0F
 #define APP_Q1_PITCH_KD                 8.0F
@@ -86,11 +82,6 @@
 
 #if (APP_Q1_PWM_MAX_PERMILLE == 0U) || (APP_Q1_PWM_MAX_PERMILLE > 1000U)
 #error "Q1 PWM maximum must be within 1..1000 permille."
-#endif
-
-#if (APP_Q1_PWM_RISE_MS < 1U) || (APP_Q1_PWM_RISE_MS > 2000U) || \
-    (APP_Q1_PWM_FALL_MS < 1U) || (APP_Q1_PWM_FALL_MS > 2000U)
-#error "Q1 PWM ramp times must be 1..2000 ms."
 #endif
 
 /* User calibration: VREFINT raw code normalized to VDDA=3300 mV.

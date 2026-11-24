@@ -37,7 +37,6 @@ typedef struct {
   uint32_t last_step_ms;
   uint32_t run_ms;
   uint32_t switches;
-  uint32_t pwm_zero_since_ms;
   int last_pwm_sign;
   bool pitch_integrating;
   float peak_deg;
@@ -49,7 +48,6 @@ typedef struct {
   float target_pitch_rate_dps;
   float target_position_m;
   float target_velocity_mps;
-  float slew_duty[2];
   uint16_t pwm[4];
 } Q1Swing;
 
