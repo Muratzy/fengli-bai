@@ -58,9 +58,11 @@
 #define APP_Q1_STOP_ROLL_DEG             8.0F
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
 #define APP_Q1_START_ANGLE_DEG           7.0F
-#define APP_Q1_PWM_MAX_PERMILLE       1000U
-#define APP_Q1_PWM_RISE_MS             500U
-#define APP_Q1_PWM_FALL_MS             200U
+#define APP_Q1_PWM_MAX_PERMILLE        800U
+/* Ramp times are between zero and the configured duty limit. */
+#define APP_Q1_PWM_RISE_MS             300U
+#define APP_Q1_PWM_FALL_MS             100U
+#define APP_Q1_PWM_SWITCH_OFF_MS        10U
 #define APP_Q1_PITCH_KP               32.75F
 #define APP_Q1_PITCH_KI                 1.0F
 #define APP_Q1_PITCH_KD                 8.0F

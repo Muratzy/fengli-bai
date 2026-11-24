@@ -44,11 +44,11 @@ IMU 任务以 500 Hz 为目标轮询数据。2026-11-23 按用户要求取消上
 
 任务链为 `imu -> fusion -> trajectory -> motor -> telemetry`，UI通过队列读取状态。题目模式当前输出58列CSV，PC用 `Tools/q1_trial.py` 采集Q1/Q2，Q2专用数据目录为 `数据记录/串口/Q2/`；旧 `serial_capture.py` 仍仅支持28列台架协议。Q2 CSV另附19列主机时间和换算值，字段及流程见 [电脑串口采集](电脑串口采集.md)。串口只接收，明确start/stop动作通过J-Link RAM命令口控制；默认observe不写命令。所有记录均为快照，不能声称MCU全采样率无丢失。
 
-统一任务API为 `PendulumApp_RequestProblemStart(id,&params)`、`PendulumApp_RequestProblemStop()`、`PendulumApp_GetProblemStatus(&status)`；题目注册/参数在 `problems/problem_api.h`，用法见 [项目逻辑框架](项目逻辑框架.md) 第2.3节。Q1/Q2均使用角度误差和陀螺仪速度误差，输出受500 ms升/200 ms退斜坡及左右互锁限制。当前Q1/Q2的32.75/1/8、D滤波50 ms为待实测起始候选；停止与故障均立即归零，Roll PID禁用输出和积分，上下电机未启用。
+统一任务 API 为 `PendulumApp_RequestProblemStart(id,&params)`、`PendulumApp_RequestProblemStop()`、`PendulumApp_GetProblemStatus(&status)`。题目注册和参数用法见 [项目逻辑框架](项目逻辑框架.md) 第 2.3 节。Q1/Q2 均使用角度误差和陀螺仪速度误差，输出经过各题 PWM 斜坡和左右互锁。当前增益 32.75/1/8 和 D 滤波 50 ms 为调参候选。停止与故障立即归零，Roll PID 输出和积分均禁用。
 
 2026-11-23 Q1 准备：用户测得万向节中心离地 0.99 m、到风力摆中心 0.67 m，并确认激光与摆杆同轴、沿左右方向往返摆动。地面光点位移满足 `x=0.99×tan(θ)`；50 cm 为两端总长，端点 ±25 cm 对应 Pitch=±14.1723°，Roll 目标为 0。0.67 m 用于简单摆近似周期估算约 1.642 s，不用它换算地面光点位置；实际刚体周期仍需实测。参数集中在 `app_config.h`，`ProblemQ1_DefaultConfig()` 提供左右对称参考轨迹，默认两周期平滑增幅（3.284 s）、15 s 观察窗口；周期与观察窗口分开，窗口到时不代表实测达标。
 
-最新 Q1 算法使用固定三维安装坐标变换后的 Roll/Pitch 基准：保留 `APP_IMU_FRAME_*`、固定陀螺仪零偏、Roll/Pitch 零位和 `H=0.99 m` 地面投影参数。`problem_q1.c` 当前生成60 cm总摆幅（端点±30 cm、目标角约±16.86°）的正弦角度/角速度参考，`q1_swing.c` 用双轴控制器的速率PID（Q1只启用Pitch）计算输出；正Pitch通过PWM1使摆体向右，负Pitch通过PWM2使摆体向左。输出沿用0～100%、500 ms升速、200 ms退速和先退零后换向互锁，MotorTask仍是唯一执行器写入者。Q1启动允许Roll/Pitch各在±7°内，不要求静止；15秒结束、KEY3、数据过期、超角和其他故障立即清零。当前Q1 PID参数为32.75/1/8、D滤波50 ms起始候选。2026-11-24 11:05 已烧录该版本并通过安全待机读回，尚未启动实物试验；地面线长仍需激光尺/录像验证。
+当前 Q1 使用固定三维安装坐标变换后的 Roll/Pitch 和 `H=0.99 m` 的地面投影参数。`problem_q1.c` 生成 60 cm 总摆幅（端点 ±30 cm、目标角约 ±16.86°）的正弦角度和角速度参考，`q1_swing.c` 计算 Pitch 轴速率 PID。正控制量通过 PWM1 使摆体向右，负控制量通过 PWM2 使摆体向左。新版调试候选在 `app_config.h` 将 Q1 限幅设为 80%，从零升到限幅为 300 ms，从限幅退零为 100 ms。换向时两路 PWM 命令同时为零至少 10 ms。Q1 启动允许 Roll/Pitch 各在 ±7° 内，15 秒结束、KEY3、数据过期、超角和其他故障立即清零，MotorTask 是唯一执行器写入者。旧版 60 cm 实测试次和新版的未烧录状态见 [项目交接](../项目交接.md)。
 
 用户要求每轮得到明确启动指令才运行。下一轮Q2使用 `python -B -X utf8 Tools/q1_trial.py --problem q2 --length-cm 60 --action start --duration 20`，先确认±7°范围、数据有效、PWM/EN关闭，再配置600 mm并发一次启动；先看数据可用相同参数加 `--action observe --duration 2`，停止用 `--action stop --duration 2`。现有58列协议保持原47列顺序并附加11列，PC可兼容旧47列会话。工具保存原始字节、CSV和含分析的session.json；遇到板端重启或启动后超过0.5秒无有效遥测即中止并尝试停止，不自动重试。正常uint32回绕不算重启；没有结束、复位或采集失败的会话不用于调参。最新参数、烧录与实测证据见根目录 [项目交接](../项目交接.md)。
 

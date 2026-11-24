@@ -86,7 +86,8 @@ static float Q1Swing_Approach(float current, float target, float rise,
   return fmaxf(current - fall, target);
 }
 
-static void Q1Swing_UpdatePwm(Q1Swing *swing, uint32_t elapsed_ms)
+static void Q1Swing_UpdatePwm(Q1Swing *swing, uint32_t now_ms,
+                              uint32_t elapsed_ms)
 {
   const float rise = (float)APP_Q1_PWM_MAX_PERMILLE *
       (float)elapsed_ms / (float)APP_Q1_PWM_RISE_MS;
@@ -94,30 +95,26 @@ static void Q1Swing_UpdatePwm(Q1Swing *swing, uint32_t elapsed_ms)
       (float)elapsed_ms / (float)APP_Q1_PWM_FALL_MS;
   const uint16_t *desired = swing->control_output.pwm_permille;
 
-  /* A polarity change must pass through zero before the other fan rises. */
-  if (swing->slew_duty[0] > 0.0F && desired[1] > 0U) {
-    swing->slew_duty[0] = Q1Swing_Approach(swing->slew_duty[0], 0.0F,
-                                            rise, fall);
-    swing->slew_duty[1] = 0.0F;
-  } else if (swing->slew_duty[1] > 0.0F && desired[0] > 0U) {
-    swing->slew_duty[1] = Q1Swing_Approach(swing->slew_duty[1], 0.0F,
-                                            rise, fall);
-    swing->slew_duty[0] = 0.0F;
-  } else {
-    for (uint32_t side = 0U; side < 2U; ++side) {
-      swing->slew_duty[side] = Q1Swing_Approach(swing->slew_duty[side],
-          (float)desired[side], rise, fall);
-    }
-  }
+  const bool was_driving = swing->pwm[0] > 0U || swing->pwm[1] > 0U;
+  const bool opposite_requested = (swing->last_pwm_sign > 0 && desired[1] > 0U) ||
+                                  (swing->last_pwm_sign < 0 && desired[0] > 0U);
+  /* Ramp the old fan down, then hold both commands at zero before switching. */
+  const bool switch_blocked = opposite_requested && (was_driving ||
+      now_ms - swing->pwm_zero_since_ms < APP_Q1_PWM_SWITCH_OFF_MS);
 
   for (uint32_t side = 0U; side < 2U; ++side) {
+    const float target = switch_blocked ? 0.0F : (float)desired[side];
+    swing->slew_duty[side] = Q1Swing_Approach(swing->slew_duty[side],
+                                            target, rise, fall);
     swing->pwm[side] = (uint16_t)(swing->slew_duty[side] + 0.5F);
   }
   swing->pwm[2] = 0U;
   swing->pwm[3] = 0U;
   const int sign = (swing->pwm[0] > 0U) ? 1 :
       (swing->pwm[1] > 0U) ? -1 : 0;
-  if (sign != 0) {
+  if (sign == 0 && was_driving) {
+    swing->pwm_zero_since_ms = now_ms;
+  } else if (sign != 0) {
     if (swing->last_pwm_sign != 0 && sign != swing->last_pwm_sign) {
       swing->switches++;
     }
@@ -194,5 +191,5 @@ void Q1Swing_Step(Q1Swing *swing, uint32_t now_ms, float roll_deg,
     Q1Swing_Stop(swing, Q1_SWING_INVALID_CONFIG);
     return;
   }
-  Q1Swing_UpdatePwm(swing, elapsed_ms);
+  Q1Swing_UpdatePwm(swing, now_ms, elapsed_ms);
 }

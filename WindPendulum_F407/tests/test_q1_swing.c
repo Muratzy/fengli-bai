@@ -85,10 +85,55 @@ static void TestSafetyAndTimeout(void)
   CheckOutput(&swing);
 }
 
+static void TestDutyLimitAndDirectionChange(void)
+{
+  Q1Swing swing = {0};
+  assert(Q1Swing_Start(&swing, 0U, 0.0F, 0.0F, 0.0F));
+
+  for (uint32_t now = 10U; now <= 300U; now += 10U) {
+    Q1Swing_Step(&swing, now, 0.0F, -24.0F, -140.0F, true, false);
+    CheckOutput(&swing);
+    assert(swing.control_output.pwm_permille[0] == 800U);
+    assert(swing.pwm[0] == (uint16_t)((800U * now + 150U) / 300U));
+  }
+
+  uint32_t now = 300U;
+  do {
+    now += 10U;
+    Q1Swing_Step(&swing, now, 0.0F, 24.0F, 140.0F, true, false);
+    CheckOutput(&swing);
+    assert(now <= 400U);
+  } while (swing.control_output.pwm_permille[1] == 0U);
+  assert(swing.pwm[0] > 0U && swing.pwm[1] == 0U);
+
+  do {
+    const uint16_t previous = swing.pwm[0];
+    now += 2U;
+    Q1Swing_Step(&swing, now, 0.0F, 24.0F, 140.0F, true, false);
+    assert(swing.pwm[0] == (previous > 16U ? previous - 16U : 0U));
+    assert(swing.pwm[1] == 0U);
+  } while (swing.pwm[0] > 0U);
+
+  const uint32_t zero_since = now;
+  for (uint32_t elapsed = 2U; elapsed < 10U; elapsed += 2U) {
+    Q1Swing_Step(&swing, zero_since + elapsed, 0.0F, 24.0F, 140.0F, true, false);
+    assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
+    assert(!swing.pitch_integrating);
+  }
+  Q1Swing_Step(&swing, zero_since + 10U, 0.0F, 24.0F, 140.0F, true, false);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == 5U);
+  assert(swing.switches == 1U);
+
+  Q1Swing_Step(&swing, zero_since + 12U, 0.0F, 24.0F, 140.0F, true, true);
+  assert(swing.reason == Q1_SWING_USER_STOP);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
+}
+
 int main(void)
 {
   TestReferenceAndPidPath();
   TestSafetyAndTimeout();
+  TestDutyLimitAndDirectionChange();
   puts("Q1 trajectory PID tests passed");
   return 0;
 }

@@ -37,6 +37,7 @@ typedef struct {
   uint32_t last_step_ms;
   uint32_t run_ms;
   uint32_t switches;
+  uint32_t pwm_zero_since_ms;
   int last_pwm_sign;
   bool pitch_integrating;
   float peak_deg;
