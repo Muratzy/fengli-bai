@@ -74,6 +74,15 @@ typedef struct {
   float pitch_kd;
   uint32_t reference_period_ms;
   uint32_t reference_ramp_ms;
+  uint8_t q1_control_phase;
+  float q1_amplitude_deg;
+  float q1_amplitude_target_deg;
+  float q1_amplitude_error_deg;
+  float q1_amplitude_output;
+  uint16_t q1_amplitude_blend_permille;
+  float q1_amplitude_ka;
+  float q1_amplitude_kcomp;
+  uint32_t q1_vcom_trial_id;
   PendulumMode mode;
 } PendulumTelemetry;
 

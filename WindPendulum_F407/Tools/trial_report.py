@@ -99,8 +99,10 @@ def session_timeline(rows):
 def save_curves(path, rows, report):
     from matplotlib.figure import Figure
 
-    figure = Figure(figsize=(12, 8), layout='constrained')
-    angle, rate, output = figure.subplots(3, 1, sharex=True)
+    has_amplitude = report['controller'] == 'q1_two_phase_amplitude'
+    figure = Figure(figsize=(12, 9 if has_amplitude else 8), layout='constrained')
+    axes = figure.subplots(4 if has_amplitude else 3, 1, sharex=True)
+    angle, rate, output = axes[:3]
     seconds, first_active, terminal = session_timeline(rows)
     plot_seconds = []
     plot_rows = []
@@ -137,6 +139,26 @@ def save_curves(path, rows, report):
         output.axhline(-limit / 10, color='#9a9da2', linestyle=':')
     output.set_ylabel('PWM equivalent (%)')
     output.set_xlabel('Time relative to trial start (s)')
+    if has_amplitude:
+        amplitude = axes[3]
+        trace(amplitude, 'q1_amplitude_cdeg', 100, 'Estimated amplitude', '#006f9d', running_only=True)
+        target_amplitude = [
+            row['q1_amplitude_target_cdeg'] / 100
+            if row.get('q1_state') == 1 else float('nan')
+            for row in plot_rows]
+        amplitude.plot(plot_seconds, target_amplitude, label='Target amplitude',
+                       color='#59677a', linestyle='--', linewidth=1.4)
+        phase_axis = amplitude.twinx()
+        phase_axis.step(plot_seconds,
+                        [row.get('q1_control_phase', 0) for row in plot_rows],
+                        label='Control phase', color='#be5318', where='post',
+                        linewidth=1.1)
+        amplitude.set_ylabel('Amplitude (deg)')
+        phase_axis.set_ylabel('Phase (0=PD, 1=blend, 2=amplitude)')
+        phase_axis.set_yticks([0, 1, 2])
+        for axis in (amplitude, phase_axis):
+            axis.spines['top'].set_visible(False)
+            axis.grid(color='#dee3e9', linewidth=0.6)
 
     for axis in figure.axes:
         axis.axvline(0, color='#687582', linewidth=0.85)
@@ -146,7 +168,14 @@ def save_curves(path, rows, report):
         axis.axhline(0, color='#a9b0b7', linewidth=0.65, zorder=0)
         axis.spines[['top', 'right']].set_visible(False)
         axis.grid(color='#dee3e9', linewidth=0.6)
-        axis.legend(loc='upper left', ncols=2, fontsize=8, framealpha=0.92)
+        if not has_amplitude or axis not in (amplitude, phase_axis):
+            axis.legend(loc='upper left', ncols=2, fontsize=8, framealpha=0.92)
+    if has_amplitude:
+        amplitude_handles, amplitude_labels = amplitude.get_legend_handles_labels()
+        phase_handles, phase_labels = phase_axis.get_legend_handles_labels()
+        amplitude.legend(amplitude_handles + phase_handles,
+                         amplitude_labels + phase_labels, loc='upper left',
+                         ncols=3, fontsize=8, framealpha=0.92)
     if terminal is not None:
         stop_t = seconds[terminal]
         stop_pitch = rows[terminal]['pitch_cdeg'] / 100
@@ -161,10 +190,14 @@ def save_curves(path, rows, report):
     target_label = f'{target_period:.0f} ms' if target_period is not None else 'unavailable'
     stop = report['first_stop']
     reason = stop['reason'] if stop is not None else 'stop not observed'
-    figure.suptitle(
-        f"{problem} pitch control | {reason}\n"
+    title = f"{problem} pitch control | {reason}\n"
+    if has_amplitude:
+        title += 'Startup PD then amplitude feedback | '
+    title += (
         f"Period {period_label} (target {target_label})  |  "
-        f"Angle RMSE {report['pitch_tracking_rmse_deg']:.2f} deg",
+        f"Angle RMSE {report['pitch_tracking_rmse_deg']:.2f} deg")
+    figure.suptitle(
+        title,
         fontsize=13, fontweight='semibold',
     )
     figure.savefig(path, dpi=160, facecolor='white')

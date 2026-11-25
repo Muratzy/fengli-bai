@@ -1,4 +1,5 @@
 #include "problems/problem_api.h"
+#include "app_config.h"
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -18,7 +19,7 @@ int main(void)
   assert(ProblemApi_Describe((ProblemId)8) == NULL);
   assert(ProblemApi_ValidateStart(PROBLEM_NONE, NULL) == PROBLEM_REQUEST_INVALID_ID);
   ProblemParams params = ProblemApi_DefaultParams(PROBLEM_Q2);
-  assert(params.line_length_mm == 600U);
+  assert(params.line_length_mm == APP_Q2_DEFAULT_LENGTH_MM);
   params.line_length_mm = 300U;
   assert(ProblemApi_ValidateStart(PROBLEM_Q2, &params) == PROBLEM_REQUEST_ACCEPTED);
   params.line_length_mm = 601U;

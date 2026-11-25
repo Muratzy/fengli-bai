@@ -60,11 +60,26 @@
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
 #define APP_Q1_START_ANGLE_DEG           7.0F
 #define APP_Q1_PWM_MAX_PERMILLE        850U
+#define APP_Q1_CONTROL_MODE_PID           0U
+#define APP_Q1_CONTROL_MODE_TWO_PHASE_AMPLITUDE 1U
+#define APP_Q1_CONTROL_MODE APP_Q1_CONTROL_MODE_TWO_PHASE_AMPLITUDE
 #define APP_Q1_PITCH_KP               28.0F
 #define APP_Q1_PITCH_KI                 0.0F
-#define APP_Q1_PITCH_KD                 8.0F
+/* Last tested fixed-reference baseline used Kd=7. */
+#define APP_Q1_PITCH_KD                 7.0F
 #define APP_Q1_RATE_FILTER_TAU_S        0.05F
 #define APP_Q1_INTEGRAL_LIMIT          150.0F
+#define APP_Q1_AMPLITUDE_SWITCH_RATIO    0.90F
+#define APP_Q1_AMPLITUDE_RELEASE_RATIO   0.85F
+#define APP_Q1_AMPLITUDE_HOLD_MS          250U
+#define APP_Q1_AMPLITUDE_BLEND_MS APP_Q1_PERIOD_MS
+/* Conservative first-trial gains, in PWM permille and degree-based units. */
+#define APP_Q1_AMPLITUDE_KA               2.0F
+#define APP_Q1_AMPLITUDE_KCOMP            0.5F
+#define APP_Q1_AMPLITUDE_D_FILTER_S       0.10F
+#define APP_Q1_AMPLITUDE_I_LIMIT         10.0F
+#define APP_Q1_AMPLITUDE_GAIN_LIMIT     100.0F
+#define APP_Q1_STOP_RATE_DPS           150.0F
 
 /* Q2 trajectory PID, current bench candidate in PWM permille / degrees.
  * Qualification is pending; Roll remains disabled. */

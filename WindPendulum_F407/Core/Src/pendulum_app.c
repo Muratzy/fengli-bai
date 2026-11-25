@@ -9,6 +9,7 @@
 #include "services/imu_frame.h"
 #include "problems/q1_swing.h"
 #include "problems/problem_q2.h"
+#include "services/q1_vcom.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -36,6 +37,32 @@ static QueueHandle_t g_fusion_queue;
 static QueueHandle_t g_control_queue;
 static QueueHandle_t g_telemetry_queue;
 static QueueHandle_t g_display_queue;
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+#define Q1_RX_CAPACITY 256U
+static QueueHandle_t g_vcom_reply_queue;
+static uint8_t g_vcom_rx[Q1_RX_CAPACITY];
+static volatile uint32_t g_vcom_write;
+static volatile uint32_t g_vcom_read;
+#endif
+
+void USART1_IRQHandler(void)
+{
+  const uint32_t status = USART1->SR;
+  const uint8_t byte = (uint8_t)USART1->DR;
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+  const uint32_t next = (g_vcom_write + 1U) % Q1_RX_CAPACITY;
+  if ((status & USART_SR_RXNE) != 0U &&
+      (status & (USART_SR_ORE | USART_SR_FE | USART_SR_NE)) == 0U &&
+      next != g_vcom_read) {
+    g_vcom_rx[g_vcom_write] = byte;
+    __DMB();
+    g_vcom_write = next;
+  }
+#else
+  (void)status;
+  (void)byte;
+#endif
+}
 /* Non-halting SWD mailbox. Zero on reset. Consumed once; no automatic start. */
 volatile uint32_t g_q1_remote_command;
 volatile uint32_t g_q2_requested_length_mm = APP_Q2_DEFAULT_LENGTH_MM;
@@ -254,6 +281,31 @@ static void TrajectoryTask(void *argument)
   }
 }
 #else
+static bool ReadVcomRequest(Q1Vcom_Request *request)
+{
+  static char line[Q1_VCOM_LINE_SIZE];
+  static size_t length;
+  static bool overflow;
+  for (unsigned i = 0U; i < Q1_RX_CAPACITY && g_vcom_read != g_vcom_write; ++i) {
+    const uint32_t index = g_vcom_read;
+    const uint8_t byte = g_vcom_rx[index];
+    g_vcom_read = (index + 1U) % Q1_RX_CAPACITY;
+    if (byte == '\n') {
+      if (length > 0U && line[length - 1U] == '\r') --length;
+      line[length] = '\0';
+      length = 0U;
+      const bool valid = !overflow && Q1Vcom_Parse(line, request);
+      overflow = false;
+      if (valid) return true;
+    } else if (length + 1U < sizeof(line) && byte != 0U) {
+      line[length++] = (char)byte;
+    } else {
+      overflow = true;
+    }
+  }
+  return false;
+}
+
 static void TrajectoryTask(void *argument)
 {
   (void)argument;
@@ -263,6 +315,7 @@ static void TrajectoryTask(void *argument)
   uint8_t selected_problem = 1U;
   uint32_t last_sample_ms = 0U;
   uint32_t last_remote = 0U;
+  uint32_t vcom_trial_id = 0U;
 
   for (;;) {
     taskENTER_CRITICAL();
@@ -288,6 +341,7 @@ static void TrajectoryTask(void *argument)
     if (last_remote == 0x5131474FU || last_remote == 0x5132474FU) {
       if (!g_q1_run_enabled) {
         selected_problem = (last_remote == 0x5132474FU) ? 2U : 1U;
+        vcom_trial_id = 0U;
         bool accepted = false;
         if (sample_fresh && !stop_key && now >= 2000U) {
           if (selected_problem == 2U) {
@@ -316,6 +370,59 @@ static void TrajectoryTask(void *argument)
         taskEXIT_CRITICAL();
       }
       last_remote = 0U;
+    }
+    Q1Vcom_Reply reply = {0};
+    if (ReadVcomRequest(&reply.request)) {
+      switch (reply.request.action) {
+        case Q1_VCOM_INFO:
+          break;
+        case Q1_VCOM_STOP:
+          g_q1_run_enabled = false;
+          if (swing.state == Q1_SWING_RUNNING) {
+            Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+          }
+          if (q2.state == PROBLEM_Q2_RUNNING) {
+            ProblemQ2_Stop(&q2, PROBLEM_Q2_USER_STOP);
+          }
+          break;
+        case Q1_VCOM_RESET:
+          if (g_q1_run_enabled ||
+              swing.state == Q1_SWING_RUNNING || q2.state == PROBLEM_Q2_RUNNING) {
+            reply.error = "BUSY";
+          } else {
+            swing = (Q1Swing){0};
+            selected_problem = 1U;
+            vcom_trial_id = 0U;
+          }
+          break;
+        case Q1_VCOM_START:
+          if (g_q1_run_enabled ||
+              swing.state == Q1_SWING_RUNNING || q2.state == PROBLEM_Q2_RUNNING) {
+            reply.error = "BUSY";
+          } else if (!sample_fresh || stop_key || now < 2000U ||
+                     fabsf(frame.roll_deg) > APP_Q1_START_ANGLE_DEG ||
+                     fabsf(frame.pitch_deg) > APP_Q1_START_ANGLE_DEG) {
+            reply.error = "NOT_READY";
+          } else if (reply.request.tuning.target_amplitude_deg == 0.0F ||
+                     !Q1Swing_StartTuned(&swing, &reply.request.tuning, now,
+                         frame.roll_deg, frame.pitch_deg, frame.pitch_rate_dps)) {
+            reply.error = "PARAMETERS";
+          } else {
+            selected_problem = 1U;
+            taskENTER_CRITICAL();
+            if (g_q1_remote_command == 0x51315354U) {
+              Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+              reply.error = "NOT_READY";
+            } else {
+              g_motor_fault_reason = 0U;
+              g_q1_run_enabled = true;
+              vcom_trial_id = reply.request.id;
+            }
+            taskEXIT_CRITICAL();
+          }
+          break;
+      }
+      (void)xQueueSend(g_vcom_reply_queue, &reply, 0U);
     }
     if (selected_problem == 1U && swing.state == Q1_SWING_RUNNING) {
       if (g_motor_fault_reason != 0U) {
@@ -389,7 +496,7 @@ static void TrajectoryTask(void *argument)
       command.q1_predicted_peak_deg = swing.predicted_peak_deg;
       command.q1_left_peak_deg = swing.left_peak_deg;
       command.q1_right_peak_deg = swing.right_peak_deg;
-      command.q1_run_ms = (swing.state == Q1_SWING_IDLE) ? 0U : now - swing.started_ms;
+      command.q1_run_ms = swing.run_ms;
       command.target_roll_deg = swing.target_roll_deg;
       command.target_pitch_deg = swing.target_pitch_deg;
       command.q1_target_position_m = swing.target_position_m;
@@ -403,12 +510,24 @@ static void TrajectoryTask(void *argument)
       command.pitch_kd = swing.controller.config.pitch_pid.kd;
       command.reference_period_ms = swing.reference.config.swing_period_ms;
       command.reference_ramp_ms = swing.reference.config.startup_ramp_ms;
+      command.q1_control_phase = (uint8_t)swing.control_phase;
+      command.q1_amplitude_deg = swing.amplitude_estimate_deg;
+      command.q1_amplitude_target_deg = swing.target_amplitude_deg;
+      command.q1_amplitude_error_deg = swing.amplitude_error_deg;
+      command.q1_amplitude_output = swing.amplitude_feedback_output +
+          swing.amplitude_compensation_output;
+      command.q1_amplitude_blend_permille = swing.amplitude_blend_permille;
+      command.q1_amplitude_ka = swing.tuning.amplitude_kp;
+      command.q1_amplitude_kcomp = swing.tuning.damping_compensation;
+      command.q1_vcom_trial_id = vcom_trial_id;
       memcpy(command.pid_p, swing.control_output.p, sizeof(command.pid_p));
       memcpy(command.pid_i, swing.control_output.i, sizeof(command.pid_i));
       memcpy(command.pid_d, swing.control_output.d, sizeof(command.pid_d));
       memcpy(command.pid_output, swing.control_output.axis_output,
           sizeof(command.pid_output));
-      command.target_length_mm = ProblemApi_DefaultParams(PROBLEM_Q1).line_length_mm;
+      command.target_length_mm = swing.reference.config.line_length_m > 0.0F ?
+          (uint32_t)(swing.reference.config.line_length_m * 1000.0F + 0.5F) :
+          ProblemApi_DefaultParams(PROBLEM_Q1).line_length_mm;
     }
     command.mode = (command.q1_state == Q1_SWING_RUNNING) ?
         ((selected_problem == 2U) ? PENDULUM_MODE_Q2_LINE : PENDULUM_MODE_LINE) :
@@ -426,7 +545,7 @@ static void TrajectoryTask(void *argument)
         .reason = command.q1_reason, .elapsed_ms = command.q1_run_ms,
         .line_length_mm = (selected_problem == 2U) ?
             (uint32_t)(q2.config.line_length_m * 1000.0F + 0.5F) :
-            ProblemApi_DefaultParams(PROBLEM_Q1).line_length_mm};
+            command.target_length_mm};
     g_pending_start_command = 0U;
     taskEXIT_CRITICAL();
     (void)xQueueOverwrite(g_control_queue, &command);
@@ -565,13 +684,25 @@ static void TelemetryTask(void *argument)
       "predicted_peak_cdeg,left_peak_cdeg,right_peak_cdeg,en_command,en_pin,keys,"
       "problem_id,target_length_mm,roll_rate_cdeg_s,target_pitch_rate_cdeg_s,"
       "filtered_pitch_rate_error_cdeg_s,pitch_integrating,pitch_kp_milli,"
-      "pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms,pwm_limit_permille\r\n";
+      "pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms,pwm_limit_permille,"
+      "q1_control_phase,q1_amplitude_cdeg,q1_amplitude_target_cdeg,q1_amplitude_error_cdeg,"
+      "q1_amplitude_output_milli,q1_amplitude_ka_milli,q1_amplitude_kcomp_milli,"
+      "q1_amplitude_blend_permille,q1_vcom_trial_id\r\n";
   PendulumTelemetry data;
   char line[768];
 
   (void)HAL_UART_Transmit(&huart1, (uint8_t *)header, sizeof(header) - 1U, 250U);
   for (;;) {
-    if (xQueueReceive(g_telemetry_queue, &data, portMAX_DELAY) != pdPASS) {
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+    Q1Vcom_Reply reply;
+    if (xQueueReceive(g_vcom_reply_queue, &reply, 0U) == pdPASS) {
+      const int length = Q1Vcom_FormatReply(line, sizeof(line), &reply);
+      if (length > 0) {
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 50U);
+      }
+    }
+#endif
+    if (xQueueReceive(g_telemetry_queue, &data, pdMS_TO_TICKS(20U)) != pdPASS) {
       continue;
     }
     const unsigned pwm_limit = (data.problem_id == PROBLEM_Q2) ?
@@ -581,7 +712,7 @@ static void TelemetryTask(void *argument)
         "%lu,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,"
         "%ld,%ld,%ld,%ld,%ld,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%ld,%ld,%u,"
         "%ld,%u,%u,%lu,%lu,%ld,%ld,%ld,%u,%u,%u,"
-        "%u,%lu,%ld,%ld,%ld,%u,%ld,%ld,%ld,%lu,%lu,%u\r\n",
+        "%u,%lu,%ld,%ld,%ld,%u,%ld,%ld,%ld,%lu,%lu,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%u,%lu\r\n",
         (unsigned long)data.timestamp_ms,
         data.imu.gyro_raw[0], data.imu.gyro_raw[1], data.imu.gyro_raw[2],
         data.imu.accel_raw[0], data.imu.accel_raw[1], data.imu.accel_raw[2],
@@ -620,7 +751,16 @@ static void TelemetryTask(void *argument)
         (long)(data.filtered_pitch_rate_error_dps * 100.0F), (unsigned)data.pitch_integrating,
         (long)(data.pitch_kp * 1000.0F), (long)(data.pitch_ki * 1000.0F),
         (long)(data.pitch_kd * 1000.0F), (unsigned long)data.reference_period_ms,
-        (unsigned long)data.reference_ramp_ms, pwm_limit);
+        (unsigned long)data.reference_ramp_ms, pwm_limit,
+        (unsigned)data.q1_control_phase,
+        (long)(data.q1_amplitude_deg * 100.0F),
+        (long)(data.q1_amplitude_target_deg * 100.0F),
+        (long)(data.q1_amplitude_error_deg * 100.0F),
+        (long)(data.q1_amplitude_output * 1000.0F),
+        (long)(data.q1_amplitude_ka * 1000.0F),
+        (long)(data.q1_amplitude_kcomp * 1000.0F),
+        (unsigned)data.q1_amplitude_blend_permille,
+        (unsigned long)data.q1_vcom_trial_id);
     if (length > 0 && (size_t)length < sizeof(line)) {
       (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 50U);
     }
@@ -639,6 +779,13 @@ void PendulumApp_CreateTasks(void)
   configASSERT(g_control_queue != NULL);
   configASSERT(g_telemetry_queue != NULL);
   configASSERT(g_display_queue != NULL);
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+  g_vcom_reply_queue = xQueueCreate(4U, sizeof(Q1Vcom_Reply));
+  configASSERT(g_vcom_reply_queue != NULL);
+  HAL_NVIC_SetPriority(USART1_IRQn, 6U, 0U);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
+  __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
+#endif
 
   configASSERT(xTaskCreate(ImuTask, "imu", 512U, NULL, 5U, NULL) == pdPASS);
   configASSERT(xTaskCreate(FusionTask, "fusion", 768U, NULL, 4U, NULL) == pdPASS);

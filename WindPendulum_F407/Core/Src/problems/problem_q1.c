@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 #define PROBLEM_Q1_MIN_LENGTH_M       0.50F
-#define PROBLEM_Q1_MAX_DURATION_MS    25000U
+#define PROBLEM_Q1_MAX_DURATION_MS    60000U
 #define PROBLEM_Q1_DEG_PER_RAD        57.2957795131F
 #define PROBLEM_Q1_PI                 3.1415926536F
 #define PROBLEM_Q1_TWO_PI             6.2831853072F
@@ -24,16 +24,27 @@ ProblemQ1_Config ProblemQ1_DefaultConfig(void)
   return config;
 }
 
+float ProblemQ1_TargetAmplitudeDeg(const ProblemQ1_Config *config)
+{
+  if (config->target_amplitude_deg > 0.0F) return config->target_amplitude_deg;
+  return atan2f(0.5F * config->line_length_m, config->ground_height_m) *
+      PROBLEM_Q1_DEG_PER_RAD;
+}
+
 bool ProblemQ1_Validate(const ProblemQ1_Config *config)
 {
-  float required_angle_deg;
+
 
   if ((config == NULL) ||
       !isfinite(config->line_length_m) ||
       !isfinite(config->ground_height_m) ||
       !isfinite(config->max_angle_deg) ||
       !isfinite(config->direction_sign) ||
-      (config->line_length_m < PROBLEM_Q1_MIN_LENGTH_M) ||
+      !isfinite(config->target_amplitude_deg) ||
+      (config->target_amplitude_deg < 0.0F) ||
+      (config->line_length_m <= 0.0F) ||
+      (config->target_amplitude_deg == 0.0F &&
+       config->line_length_m < PROBLEM_Q1_MIN_LENGTH_M) ||
       (config->ground_height_m <= 0.0F) ||
       (config->max_angle_deg <= 0.0F) ||
       (config->max_angle_deg >= 89.0F) ||
@@ -51,10 +62,7 @@ bool ProblemQ1_Validate(const ProblemQ1_Config *config)
     return false;
   }
 
-  required_angle_deg = atan2f(0.5F * config->line_length_m,
-                              config->ground_height_m) *
-                      PROBLEM_Q1_DEG_PER_RAD;
-  return required_angle_deg <= config->max_angle_deg;
+  return ProblemQ1_TargetAmplitudeDeg(config) <= config->max_angle_deg;
 }
 
 ProblemQ1_Result ProblemQ1_Start(ProblemQ1 *problem,
@@ -117,8 +125,8 @@ bool ProblemQ1_Step(ProblemQ1 *problem, uint32_t now_ms,
   angular_rate = PROBLEM_Q1_TWO_PI * 1000.0F /
                  (float)problem->config.swing_period_ms;
   phase = angular_rate * (float)elapsed_ms * 0.001F;
-  amplitude_rad = atan2f(0.5F * problem->config.line_length_m,
-                         problem->config.ground_height_m);
+  amplitude_rad = ProblemQ1_TargetAmplitudeDeg(&problem->config) /
+      PROBLEM_Q1_DEG_PER_RAD;
   if (elapsed_ms < problem->config.startup_ramp_ms)
   {
     const float ramp_phase = PROBLEM_Q1_PI * (float)elapsed_ms /

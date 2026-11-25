@@ -131,12 +131,78 @@ static void TestDutyLimitAndDirectionChange(void)
   assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
 }
 
+static void TestTwoPhaseAmplitudeControl(void)
+{
+  Q1Swing swing = {0};
+  assert(APP_Q1_CONTROL_MODE == APP_Q1_CONTROL_MODE_TWO_PHASE_AMPLITUDE);
+  assert(Q1Swing_Start(&swing, 0U, 0.0F, 0.0F, 0.0F));
+
+  for (uint32_t now = 2U; now <= 3800U; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, 15.0F, 20.0F, true, false);
+  }
+  assert(swing.control_phase == Q1_SWING_CONTROL_BLEND ||
+         swing.control_phase == Q1_SWING_CONTROL_AMPLITUDE);
+  assert(swing.amplitude_estimate_deg > 14.0F);
+
+  for (uint32_t now = 3802U; now <= 6000U; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, 15.0F, 20.0F, true, false);
+  }
+  assert(swing.control_phase == Q1_SWING_CONTROL_AMPLITUDE);
+  assert(swing.control_output.axis_output[PENDULUM_AXIS_PITCH] > 0.0F);
+
+  for (uint32_t now = 6002U; now <= 7000U; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, 19.0F, 20.0F, true, false);
+  }
+  assert(swing.amplitude_error_deg < 0.0F);
+  assert(swing.control_output.axis_output[PENDULUM_AXIS_PITCH] < 0.0F);
+  CheckOutput(&swing);
+}
+
+static void TestTunedTrialUsesRamParameters(void)
+{
+  Q1Swing swing = {0};
+  Q1Swing_Tuning tuning = Q1Swing_DefaultTuning();
+  tuning.startup_kp = 18.0F;
+  tuning.startup_kd = 4.0F;
+  tuning.target_amplitude_deg = 12.0F;
+  tuning.amplitude_ki = 0.3F;
+  tuning.amplitude_kd = 0.2F;
+  assert(Q1Swing_StartTuned(&swing, &tuning, 0U, 0.0F, 0.0F, 0.0F));
+
+  tuning.startup_kp = 30.0F;
+  assert(swing.controller.config.pitch_pid.kp == 18.0F);
+  assert(swing.controller.config.pitch_pid.kd == 4.0F);
+  assert(swing.amplitude_pid.config.ki == 0.3F);
+  assert(swing.amplitude_pid.config.kd == 0.2F);
+  assert(swing.target_amplitude_deg == 12.0F);
+
+  for (uint32_t now = 2U; now <= 5300U; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, 11.0F, 10.0F, true, false);
+    CheckDirectOutput(&swing);
+  }
+  assert(swing.control_phase == Q1_SWING_CONTROL_AMPLITUDE);
+  assert(swing.control_output.i[PENDULUM_AXIS_PITCH] > 0.0F);
+  assert(swing.amplitude_error_deg > 0.0F);
+  Q1Swing_Step(&swing, 5302U, 0.0F, 11.5F, 10.0F, true, false);
+  assert(swing.amplitude_pid.d_term < 0.0F);
+
+  Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+  tuning.target_amplitude_deg = 24.0F;
+  assert(!Q1Swing_StartTuned(&swing, &tuning, 6000U, 0.0F, 0.0F, 0.0F));
+  assert(swing.reason == Q1_SWING_INVALID_CONFIG);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
+  assert(Q1Swing_Start(&swing, 6000U, 0.0F, 0.0F, 0.0F));
+  assert(swing.target_amplitude_deg > 16.8F);
+}
+
 int main(void)
 {
   TestReferenceAndPidPath();
   TestDerivativeDampsMeasuredRate();
   TestSafetyAndTimeout();
   TestDutyLimitAndDirectionChange();
+  TestTwoPhaseAmplitudeControl();
+  TestTunedTrialUsesRamParameters();
   puts("Q1 trajectory PID tests passed");
   return 0;
 }

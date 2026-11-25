@@ -27,11 +27,29 @@ typedef enum {
   Q1_SWING_INVALID_CONFIG
 } Q1Swing_Reason;
 
+typedef enum {
+  Q1_SWING_CONTROL_PID = 0,
+  Q1_SWING_CONTROL_BLEND,
+  Q1_SWING_CONTROL_AMPLITUDE
+} Q1Swing_ControlPhase;
+
+typedef struct {
+  float startup_kp;
+  float startup_kd;
+  float amplitude_kp;
+  float amplitude_ki;
+  float amplitude_kd;
+  float damping_compensation;
+  float target_amplitude_deg;
+} Q1Swing_Tuning;
+
 typedef struct {
   Q1Swing_State state;
   Q1Swing_Reason reason;
   ProblemQ1 reference;
   PendulumControl controller;
+  Q1Swing_Tuning tuning;
+  PID_Controller amplitude_pid;
   PendulumControl_Output control_output;
   uint32_t started_ms;
   uint32_t last_step_ms;
@@ -39,9 +57,20 @@ typedef struct {
   uint32_t switches;
   int last_pwm_sign;
   bool pitch_integrating;
+  bool amplitude_mode_enabled;
+  bool amplitude_threshold_tracking;
+  Q1Swing_ControlPhase control_phase;
+  uint32_t amplitude_threshold_since_ms;
+  uint32_t amplitude_blend_started_ms;
+  uint16_t amplitude_blend_permille;
   float peak_deg;
   float left_peak_deg;
   float right_peak_deg;
+  float amplitude_estimate_deg;
+  float target_amplitude_deg;
+  float amplitude_error_deg;
+  float amplitude_feedback_output;
+  float amplitude_compensation_output;
   float predicted_peak_deg;
   float target_roll_deg;
   float target_pitch_deg;
@@ -51,6 +80,10 @@ typedef struct {
   uint16_t pwm[4];
 } Q1Swing;
 
+Q1Swing_Tuning Q1Swing_DefaultTuning(void);
+bool Q1Swing_StartTuned(Q1Swing *swing, const Q1Swing_Tuning *tuning,
+                        uint32_t now_ms, float roll_deg, float pitch_deg,
+                        float pitch_rate_dps);
 void Q1Swing_Stop(Q1Swing *swing, Q1Swing_Reason reason);
 bool Q1Swing_Start(Q1Swing *swing, uint32_t now_ms, float roll_deg,
                     float pitch_deg, float pitch_rate_dps);

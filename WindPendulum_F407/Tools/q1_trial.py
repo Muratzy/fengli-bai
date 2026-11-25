@@ -38,8 +38,14 @@ PID_HEADER = LEGACY_HEADER + (
     'filtered_pitch_rate_error_cdeg_s,pitch_integrating,pitch_kp_milli,'
     'pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms'
 ).split(',')
-HEADER = PID_HEADER + ['pwm_limit_permille']
-HEADERS_BY_COUNT = {len(fields): fields for fields in (LEGACY_HEADER, PID_HEADER, HEADER)}
+PWM_HEADER = PID_HEADER + ['pwm_limit_permille']
+AMPLITUDE_HEADER = PWM_HEADER + ['q1_control_phase', 'q1_amplitude_cdeg',
+                       'q1_amplitude_target_cdeg', 'q1_amplitude_error_cdeg',
+                       'q1_amplitude_output_milli', 'q1_amplitude_ka_milli',
+                       'q1_amplitude_kcomp_milli', 'q1_amplitude_blend_permille']
+HEADER = AMPLITUDE_HEADER + ['q1_vcom_trial_id']
+HEADERS_BY_COUNT = {len(fields): fields for fields in
+                    (LEGACY_HEADER, PID_HEADER, PWM_HEADER, AMPLITUDE_HEADER, HEADER)}
 Q2_EXTRA_FIELDS = ['host_rx_time', 'host_elapsed_s', 'requested_length_cm',
     'roll_deg', 'pitch_deg', 'target_roll_deg', 'target_pitch_deg',
     'roll_rate_dps', 'pitch_rate_dps', 'target_pitch_rate_dps',
@@ -56,7 +62,7 @@ def parse_line(line):
     if values == names:
         return None
     if names is None:
-        raise ValueError('Trial protocol requires 47, 58, or 59 fields')
+        raise ValueError('Trial protocol requires 47, 58, 59, 67, or 68 fields')
     row = dict.fromkeys(HEADER, 0)
     row.update(zip(names, map(int, values)))
     if names is LEGACY_HEADER:
@@ -70,6 +76,10 @@ def parse_line(line):
             raise ValueError('Unexpected duty')
     if not 0 <= row['pwm_limit_permille'] <= 1000:
         raise ValueError('Unexpected PWM limit')
+    if not 0 <= row['q1_control_phase'] <= 2:
+        raise ValueError('Unexpected Q1 control phase')
+    if not 0 <= row['q1_amplitude_blend_permille'] <= 1000:
+        raise ValueError('Unexpected Q1 amplitude blend')
     return row
 
 
@@ -225,6 +235,7 @@ def reference_cycle_metrics(active, stop_ms=None):
 
 def analyze(rows, capture_error=None, historical_pwm_limit=None):
     active = [r for r in rows if r['q1_state'] == 1]
+    amplitude_mode = any(r.get('q1_control_phase', 0) > 0 for r in rows)
     first_active = next((i for i, row in enumerate(rows) if row['q1_state'] == 1), None)
     pid_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 or
                     (r.get('problem_id') == 1 and (r.get('reference_period_ms', 0) > 0 or
@@ -252,6 +263,7 @@ def analyze(rows, capture_error=None, historical_pwm_limit=None):
               'first_stop': first_stop,
               'controller': ('q2_trajectory_pid' if any(r['mode'] == 8 or
                   r.get('problem_id') == 2 for r in rows) else
+                  'q1_two_phase_amplitude' if amplitude_mode else
                   'q1_reference_pid' if pid_trial else 'q1_legacy_endpoint'),
               'switch_count_meaning': ('applied_pwm_polarity_changes'
                   if pid_trial else 'legacy_endpoint_decisions'),
@@ -280,6 +292,8 @@ def analyze(rows, capture_error=None, historical_pwm_limit=None):
             'note': 'Angle-derived estimates only; a ruler/ground trace must verify actual length and linearity. ' +
                     ('Q2 tracks a smooth angle trajectory using PID. '
                      if result['controller'] == 'q2_trajectory_pid' else
+                     'Q1 uses startup reference PID, then amplitude feedback; the fixed-coordinate target is telemetry only after transition. '
+                     if result['controller'] == 'q1_two_phase_amplitude' else
                      'Q1 follows a fixed-coordinate reference with rate PID. '
                      if pid_trial else
                      'Q1 uses the legacy endpoint switching and turn/coast thresholds. ') +
@@ -310,6 +324,36 @@ def analyze(rows, capture_error=None, historical_pwm_limit=None):
                 for values in sorted({(r['pitch_kp_milli']/1000,r['pitch_ki_milli']/1000,
                     r['pitch_kd_milli']/1000,r['reference_period_ms'],r['reference_ramp_ms'],
                     r['target_length_mm']) for r in active})]
+        if amplitude_mode:
+            amplitude_rows = [r for r in active if r.get('q1_control_phase', 0) > 0]
+            phases = ('startup_pid', 'blend', 'amplitude')
+            result['q1_control_phase_rows'] = {
+                phases[phase]: sum(r.get('q1_control_phase', 0) == phase for r in active)
+                for phase in range(len(phases))}
+            startup_rows = [r for r in active if r.get('q1_control_phase', 0) == 0]
+            if startup_rows:
+                startup_errors = [(r['target_pitch_cdeg'] - r['pitch_cdeg']) / 100
+                                  for r in startup_rows]
+                result['q1_startup_pid_rmse_deg'] = math.sqrt(
+                    statistics.mean(error * error for error in startup_errors))
+            if amplitude_rows:
+                estimates = [r['q1_amplitude_cdeg'] / 100 for r in amplitude_rows]
+                errors = [r['q1_amplitude_error_cdeg'] / 100 for r in amplitude_rows]
+                result['amplitude_control'] = {
+                    'target_amplitude_deg': statistics.median(
+                        r['q1_amplitude_target_cdeg'] / 100 for r in amplitude_rows),
+                    'first_run_ms': amplitude_rows[0]['q1_run_ms'],
+                    'last_run_ms': amplitude_rows[-1]['q1_run_ms'],
+                    'estimate_range_deg': [min(estimates), max(estimates)],
+                    'mean_absolute_error_deg': statistics.mean(map(abs, errors)),
+                    'max_absolute_output_permille': max(
+                        abs(r['q1_amplitude_output_milli']) / 1000
+                        for r in amplitude_rows),
+                    'ka': statistics.median(
+                        r['q1_amplitude_ka_milli'] / 1000 for r in amplitude_rows),
+                    'kcomp': statistics.median(
+                        r['q1_amplitude_kcomp_milli'] / 1000 for r in amplitude_rows),
+                }
     return result
 
 
@@ -327,6 +371,8 @@ def report_session(directory, historical_pwm_limit=None):
         fields = set(reader.fieldnames or ())
         if fields.issuperset(HEADER):
             names = HEADER
+        elif fields.issuperset(PWM_HEADER):
+            names = PWM_HEADER
         elif fields.issuperset(PID_HEADER):
             names = PID_HEADER
         elif fields.issuperset(LEGACY_HEADER):

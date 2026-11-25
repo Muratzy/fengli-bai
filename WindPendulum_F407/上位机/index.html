@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>风力摆 · Q1 实验台</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="brand-name">风力摆</span>
+    </div>
+    <nav class="navigation" aria-label="实验台区域">
+      <a href="#overview" aria-current="page"><span class="nav-icon overview-icon" aria-hidden="true"></span>总览</a>
+      <a href="#tuning"><span class="nav-icon sliders" aria-hidden="true"></span>参数设置</a>
+      <a href="#experiment"><span class="nav-icon play" aria-hidden="true"></span>实验控制</a>
+      <a href="#monitor"><span class="nav-icon monitor-icon" aria-hidden="true"></span>实时监控</a>
+      <a href="#records"><span class="nav-icon archive" aria-hidden="true"></span>实验记录</a>
+    </nav>
+    <div class="serial-spec"><span>J-Link VCOM</span><small>115200 · 8-N-1</small></div>
+  </aside>
+  <header class="top">
+    <div><h1>Q1 实验台</h1><p>STM32F407 风力摆控制</p></div>
+    <span id="connection" class="connection" role="status">串口未连接</span>
+  </header>
+  <main id="overview">
+    <div class="setup">
+      <section class="panel" id="tuning">
+        <h2>参数设置</h2>
+        <form id="parameters">
+          <fieldset>
+            <legend>启动 PD</legend>
+            <label>Kp<input name="startupKp" type="number" min="0" max="100" step="0.001" value="28" required></label>
+            <label>Kd<input name="startupKd" type="number" min="0" max="50" step="0.001" value="7" required></label>
+          </fieldset>
+          <fieldset>
+            <legend>幅值 PID</legend>
+            <label>Kp<input name="amplitudeKp" type="number" min="0" max="10" step="0.001" value="2" required></label>
+            <label>Ki<input name="amplitudeKi" type="number" min="0" max="5" step="0.001" value="0" required></label>
+            <label>Kd<input name="amplitudeKd" type="number" min="0" max="2" step="0.001" value="0" required></label>
+            <label>阻尼补偿<input name="compensation" type="number" min="0" max="5" step="0.001" value="0.5" required></label>
+          </fieldset>
+          <fieldset>
+            <legend>目标</legend>
+            <label>投影总跨度 (cm)<input name="targetSpanCm" type="number" inputmode="decimal" step="0.01" value="60" aria-describedby="target-angle" required></label>
+            <p class="muted" id="target-angle"></p>
+          </fieldset>
+        </form>
+      </section>
+      <section class="panel control" id="experiment">
+        <h2>实验控制</h2>
+        <div class="actions">
+          <button id="connect">连接串口</button>
+          <button id="start" class="primary" disabled>下发并启动</button>
+          <button id="stop" class="danger" disabled>停止</button>
+          <button id="reset" disabled>重置实验</button>
+        </div>
+        <dl class="run-info">
+          <div><dt>板端状态</dt><dd id="board-state">—</dd></div>
+          <div><dt>本轮编号</dt><dd id="run-id">—</dd></div>
+          <div><dt>运行时间</dt><dd id="elapsed">—</dd></div>
+        </dl>
+        <p id="message" role="status" class="message">选择 J-Link VCOM 串口开始监测。</p>
+      </section>
+    </div>
+    <section class="panel monitor" id="monitor">
+      <div class="section-head"><h2>实时监控</h2><span class="phase" id="phase">等待遥测</span></div>
+      <div id="charts" class="charts">
+        <article><header><h3>Pitch 角度</h3><output id="angle">—</output></header><canvas id="chart-angle" aria-label="实时 Pitch 角度曲线"></canvas><small><i class="trace-measured"></i>实测 <i class="trace-reference"></i>正弦参考</small></article>
+        <article><header><h3>Pitch 角速度</h3><output id="rate">—</output></header><canvas id="chart-rate" aria-label="实时 Pitch 角速度曲线"></canvas><small><i class="trace-measured"></i>实测 <i class="trace-reference"></i>正弦参考</small></article>
+        <article><header><h3>估算幅值</h3><output id="amplitude">—</output></header><canvas id="chart-amplitude" aria-label="实时幅值曲线"></canvas><small><i class="trace-measured"></i>估算 <i class="trace-reference"></i>目标</small></article>
+        <article><header><h3>实际 PWM</h3><output id="pwm">—</output></header><canvas id="chart-pwm" aria-label="左右实际 PWM 曲线"></canvas><small><i class="trace-measured"></i>PWM1 右 <i class="trace-secondary"></i>PWM2 左</small></article>
+      </div>
+    </section>
+    <section class="panel history" id="records">
+      <div class="section-head"><h2>实验记录</h2><span class="muted">选择两轮叠加对比</span></div>
+      <div id="trial-trajectory" class="compare trajectory" hidden>
+        <div class="section-head"><h3>本轮地面投影轨迹</h3><span class="muted" id="trajectory-trial"></span></div>
+        <p id="trajectory-empty" class="muted">暂无运行态遥测。</p>
+        <div id="trajectory-layout" class="trajectory-layout" hidden>
+          <div class="trajectory-plot">
+            <div class="muted">↑ 上下偏移（cm）</div>
+            <canvas id="chart-trajectory" aria-label="实测姿态估算的地面轨迹，横轴为左右位移，纵轴为上下偏移"></canvas>
+            <div class="trajectory-axis muted">左右位移（cm）→</div>
+            <small><i class="trace-measured"></i>IMU 投影 <i class="trace-reference"></i>中心线</small>
+          </div>
+          <div class="trajectory-plot">
+            <div class="muted">↑ 左右摆动位移（cm）</div>
+            <canvas id="chart-displacement" aria-label="左右摆动位移随时间变化，零线为静止中心"></canvas>
+            <div class="trajectory-axis muted">运行时间（s）→</div>
+            <h4>最近三个完整周期的摆幅</h4>
+            <p id="cycle-empty" class="muted">等待一次完整来回。</p>
+            <ol id="cycle-values" class="cycle-values"></ol>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th scope="col">对比</th><th scope="col">编号</th><th scope="col">启动时间</th><th scope="col">状态</th><th scope="col">参数快照</th><th scope="col">数据</th></tr></thead>
+        <tbody id="history"><tr><td class="empty" colspan="6">暂无实验记录</td></tr></tbody></table>
+      </div>
+      <div id="compare" class="compare" hidden>
+        <div class="section-head"><h3>历史对比</h3><label>信号 <select id="compare-metric"><option value="angle">Pitch 角度</option><option value="rate">Pitch 角速度</option><option value="amplitude">估算幅值</option><option value="pwm">有符号 PWM</option></select></label></div>
+        <div id="compare-labels" class="muted"></div>
+        <canvas id="chart-compare" aria-label="实验曲线叠加对比"></canvas>
+      </div>
+    </section>
+  </main>
+  <dialog id="snapshot">
+    <div class="section-head"><h2 id="snapshot-title">参数快照</h2><form method="dialog"><button>关闭</button></form></div>
+    <dl id="snapshot-fields"></dl>
+  </dialog>
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>
