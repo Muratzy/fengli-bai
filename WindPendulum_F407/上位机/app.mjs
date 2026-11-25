@@ -1,6 +1,7 @@
-import { fields, isClockReset, parseTelemetry, snapshotFields, tuningKeys } from "./protocol.mjs";
+import { isClockReset, parseTelemetry, snapshotFields, tuningKeys } from "./protocol.mjs";
 import { Vcom } from "./serial.mjs";
-import { openHistory, historyOperation } from "./storage.mjs";
+import { archiveTrial, historyOperation, openArchiveSettings, openHistory,
+  trialCsv, trialFilename } from "./storage.mjs";
 import { chart, measuredColor, referenceColor, secondaryColor } from "./charts.mjs";
 
 const byId = id => document.getElementById(id);
@@ -16,6 +17,9 @@ const phases = ["启动 PD", "切换混合", "幅值 PID"];
 const terminal = row => row.state >= 2;
 const trialLabel = id => "#" + String(id).padStart(3, "0");
 const nowIso = () => new Date().toISOString();
+const archiveButton = byId("archive-directory");
+const archiveStatus = byId("archive-status");
+const archivePickerSupported = typeof window.showDirectoryPicker === "function";
 
 let database;
 let serial;
@@ -36,6 +40,10 @@ const selected = new Set();
 let comparison = [];
 let trajectoryRecord;
 let trajectory;
+let archiveSettings;
+let archiveDirectory;
+let archiveQueue = Promise.resolve();
+const archivedRecords = new Set();
 
 function notify(message, error = false) {
   byId("message").textContent = message;
@@ -82,6 +90,52 @@ function updateSpanLimits() {
   targetSpan.max = (Math.floor(spanForAngle(20) * 100) / 100).toFixed(2);
 }
 
+function showArchiveStatus(message, error = false) {
+  archiveStatus.textContent = message;
+  archiveStatus.classList.toggle("error", error);
+}
+
+function syncArchive() {
+  const directory = archiveDirectory;
+  if (!directory) return;
+  archiveQueue = archiveQueue.then(async () => {
+    if (directory !== archiveDirectory) return;
+    try {
+      for (const record of history.values()) {
+        if (record === active || archivedRecords.has(record)) continue;
+        await archiveTrial(directory, record);
+        if (directory !== archiveDirectory) return;
+        archivedRecords.add(record);
+      }
+      showArchiveStatus(directory.name + " · 已归档 " + archivedRecords.size + " 轮（CSV 和 JSON）");
+    } catch (error) {
+      if (directory === archiveDirectory) {
+        showArchiveStatus("文件夹写入失败，记录仍在网页中。请重新选择数据文件夹。", true);
+      }
+    }
+  });
+}
+
+archiveButton.addEventListener("click", async () => {
+  archiveButton.disabled = true;
+  try {
+    const directory = await window.showDirectoryPicker({ id: "wind-pendulum-trials", mode: "readwrite" });
+    if (!archiveDirectory || !(await directory.isSameEntry(archiveDirectory))) archivedRecords.clear();
+    archiveDirectory = directory;
+    try {
+      await historyOperation(archiveSettings, "readwrite",
+        store => store.put(directory, "directory"), "settings");
+    } catch (error) {
+      showArchiveStatus("当前页面可保存文件，重开网页后需重新选择文件夹。", true);
+    }
+    syncArchive();
+  } catch (error) {
+    if (error.name !== "AbortError") showArchiveStatus("无法打开数据文件夹 · " + error.message, true);
+  } finally {
+    archiveButton.disabled = false;
+  }
+});
+
 async function save(record) {
   try {
     await historyOperation(database, "readwrite", store => store.put(record));
@@ -99,6 +153,7 @@ function finish(status, row) {
   record.endState = row?.state;
   record.endReason = row?.reason;
   void save(record);
+  syncArchive();
   renderHistory();
   updateControls();
 }
@@ -371,14 +426,12 @@ function renderHistory() {
     snapshotButton.addEventListener("click", () => snapshot(record));
     parameters.append(snapshotButton);
     const actions = row.insertCell();
-    const prefix = "Q1-" + String(record.id).padStart(3, "0");
+    const prefix = trialFilename(record);
     const csv = document.createElement("button");
     csv.textContent = "CSV";
     csv.disabled = !record.rows.length && active !== record;
     csv.addEventListener("click", () => {
-      const count = record.rows[0]?.split(",").length ?? fields.length;
-      download(prefix + ".csv", fields.slice(0, count).join(",") + "\r\n" +
-        record.rows.join("\r\n") + "\r\n", "text/csv;charset=utf-8");
+      download(prefix + ".csv", trialCsv(record), "text/csv;charset=utf-8");
     });
     const json = document.createElement("button");
     json.textContent = "JSON";
@@ -595,3 +648,25 @@ try {
   notify("无法打开浏览器实验存储 · " + error.message, true);
 }
 updateControls();
+
+if (database && archivePickerSupported) {
+  try {
+    archiveSettings = await openArchiveSettings();
+    const directory = await historyOperation(archiveSettings, "readonly",
+      store => store.get("directory"), "settings");
+    if (directory && await directory.queryPermission({ mode: "readwrite" }) === "granted") {
+      archiveDirectory = directory;
+      syncArchive();
+    } else if (directory) {
+      showArchiveStatus("请重新授权「实验数据」文件夹。");
+    } else {
+      showArchiveStatus("选择「实验数据」文件夹后，每轮结束自动归档。");
+    }
+  } catch (error) {
+    showArchiveStatus("无法恢复文件夹授权，请选择数据文件夹。", true);
+  } finally {
+    archiveButton.disabled = false;
+  }
+} else if (!archivePickerSupported) {
+  showArchiveStatus("请用 Chrome 或 Edge 打开本地地址以选择数据文件夹。");
+}

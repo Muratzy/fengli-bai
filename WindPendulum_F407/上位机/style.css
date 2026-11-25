@@ -216,6 +216,7 @@ dt,.muted,small { color: var(--muted); font-size: .78rem; }
 dd { margin: .24rem 0 0; font-size: .92rem; font-weight: 650; font-variant-numeric: tabular-nums; }
 .message { min-height: 1.2em; color: var(--muted); font-size: .82rem; }
 .message.error { color: #9c3e2d; }
+.archive-status { margin-bottom: .85rem; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-bottom: .88rem; }
 .charts {
   display: grid;
