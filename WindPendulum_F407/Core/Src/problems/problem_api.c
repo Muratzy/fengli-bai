@@ -4,7 +4,7 @@
 
 static const ProblemDescriptor descriptors[] = {
     {PROBLEM_Q1, "Q1 line swing", true},
-    {PROBLEM_Q2, "Q2 variable line PID", true},
+    {PROBLEM_Q2, "Q2 variable line swing", true},
     {PROBLEM_Q3, "Q3 direction line", false},
     {PROBLEM_Q4, "Q4 braking", false},
     {PROBLEM_Q5, "Q5 circle", false},
@@ -36,7 +36,8 @@ ProblemRequestResult ProblemApi_ValidateStart(ProblemId id,
   const ProblemParams defaults = ProblemApi_DefaultParams(id);
   const uint32_t length = (params == NULL) ? defaults.line_length_mm : params->line_length_mm;
   if ((id == PROBLEM_Q1 && length != defaults.line_length_mm) ||
-      (id == PROBLEM_Q2 && (length < 300U || length > 600U)))
+      (id == PROBLEM_Q2 &&
+       (length < APP_Q2_MIN_LENGTH_MM || length > APP_Q2_MAX_LENGTH_MM)))
     return PROBLEM_REQUEST_INVALID_PARAMS;
   return PROBLEM_REQUEST_ACCEPTED;
 }

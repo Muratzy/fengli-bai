@@ -236,12 +236,14 @@ def reference_cycle_metrics(active, stop_ms=None):
 
 def analyze(rows, capture_error=None, historical_pwm_limit=None):
     active = [r for r in rows if r['q1_state'] == 1]
-    amplitude_mode = any(r.get('q1_control_phase', 0) > 0 for r in rows)
+    trial_rows = active or rows
+    q2_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 for r in trial_rows)
+    amplitude_mode = any(r.get('q1_control_phase', 0) > 0 for r in trial_rows) or (
+        q2_trial and any(r.get('q1_amplitude_target_cdeg', 0) > 0 for r in trial_rows))
     first_active = next((i for i, row in enumerate(rows) if row['q1_state'] == 1), None)
-    pid_trial = any(r['mode'] == 8 or r.get('problem_id') == 2 or
-                    (r.get('problem_id') == 1 and (r.get('reference_period_ms', 0) > 0 or
-                     any(r.get(f'pitch_k{term}_milli', 0) for term in 'pid')))
-                    for r in rows)
+    pid_trial = q2_trial or any(
+        r.get('problem_id') == 1 and (r.get('reference_period_ms', 0) > 0 or
+            any(r.get(f'pitch_k{term}_milli', 0) for term in 'pid')) for r in trial_rows)
     restarts = [{'previous_ms': a['time_ms'], 'current_ms': b['time_ms']}
                 for a, b in zip(rows, rows[1:])
                 if board_time_restarted(a['time_ms'], b['time_ms'])]
@@ -262,9 +264,8 @@ def analyze(rows, capture_error=None, historical_pwm_limit=None):
               'mcu_time_restarts': len(restarts), 'time_restart_events': restarts,
               'terminal_state_observed': terminal_observed,
               'first_stop': first_stop,
-              'controller': ('q2_trajectory_pid' if any(r['mode'] == 8 or
-                  r.get('problem_id') == 2 for r in rows) else
-                  'q1_two_phase_amplitude' if amplitude_mode else
+              'controller': ('q1_two_phase_amplitude' if amplitude_mode else
+                  'q2_trajectory_pid' if q2_trial else
                   'q1_reference_pid' if pid_trial else 'q1_legacy_endpoint'),
               'switch_count_meaning': ('applied_pwm_polarity_changes'
                   if pid_trial else 'legacy_endpoint_decisions'),
@@ -291,9 +292,9 @@ def analyze(rows, capture_error=None, historical_pwm_limit=None):
             'coast_rows': sum(r['pwm1_applied_permille'] == r['pwm2_applied_permille'] == 0 for r in active),
             'both_on_rows': sum(bool(r['pwm1_applied_permille'] and r['pwm2_applied_permille']) for r in active),
             'note': 'Angle-derived estimates only; a ruler/ground trace must verify actual length and linearity. ' +
-                    ('Q2 tracks a smooth angle trajectory using PID. '
+                    ('Legacy Q2 tracks a smooth angle trajectory using PID. '
                      if result['controller'] == 'q2_trajectory_pid' else
-                     'Q1 uses startup reference PID, then amplitude feedback; the fixed-coordinate target is telemetry only after transition. '
+                     'The shared swing controller uses startup reference PID, then amplitude feedback; the fixed-coordinate target is telemetry only after transition. '
                      if result['controller'] == 'q1_two_phase_amplitude' else
                      'Q1 follows a fixed-coordinate reference with rate PID. '
                      if pid_trial else

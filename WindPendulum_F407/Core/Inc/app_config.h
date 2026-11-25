@@ -87,18 +87,11 @@
 #define APP_Q1_CENTER_TURN_RATE_DPS        5.0F
 #define APP_Q1_STOP_RATE_DPS           150.0F
 
-/* Q2 trajectory PID, current bench candidate in PWM permille / degrees.
- * Qualification is pending; Roll remains disabled. */
+/* Q2 uses the Q1 swing controller with its own length and time window. */
 #define APP_Q2_DEFAULT_LENGTH_MM       500U
-#define APP_Q2_PERIOD_MS              1610U
-#define APP_Q2_AMPLITUDE_RAMP_MS      (2U * APP_Q2_PERIOD_MS)
+#define APP_Q2_MIN_LENGTH_MM           300U
+#define APP_Q2_MAX_LENGTH_MM           600U
 #define APP_Q2_DURATION_MS           15000U
-#define APP_Q2_PWM_MAX_PERMILLE        850U
-#define APP_Q2_PITCH_KP                 32.75F
-#define APP_Q2_PITCH_KI                  0.0F
-#define APP_Q2_PITCH_KD                  8.0F
-#define APP_Q2_RATE_FILTER_TAU_S         0.05F
-#define APP_Q2_INTEGRAL_LIMIT          150.0F
 
 #if (APP_Q1_PWM_MAX_PERMILLE == 0U) || (APP_Q1_PWM_MAX_PERMILLE > 1000U)
 #error "Q1 PWM maximum must be within 1..1000 permille."

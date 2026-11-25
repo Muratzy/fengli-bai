@@ -223,6 +223,53 @@ static void TestConfiguredRunDuration(void)
   assert(!Q1Swing_StartTuned(&swing, &tuning, 20000U, 0.0F, 0.0F, 0.0F));
 }
 
+static void TestQ2SharedController(void)
+{
+  Q1Swing q2 = {0};
+  assert(!Q1Swing_StartQ2(&q2, APP_Q2_MIN_LENGTH_MM - 1U, 0U, 0.0F, 0.0F, 0.0F));
+  assert(q2.reason == Q1_SWING_INVALID_CONFIG);
+  assert(!Q1Swing_StartQ2(&q2, APP_Q2_MAX_LENGTH_MM + 1U, 0U, 0.0F, 0.0F, 0.0F));
+  assert(q2.reason == Q1_SWING_INVALID_CONFIG);
+
+  const uint32_t lengths[] = {300U, 400U, 500U, 537U, 600U};
+  for (unsigned i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+    assert(Q1Swing_StartQ2(&q2, lengths[i], 0U, 0.0F, 0.0F, 0.0F));
+    assert(lroundf(q2.reference.config.line_length_m * 1000.0F) == (long)lengths[i]);
+    assert(q2.reference.config.duration_ms == APP_Q2_DURATION_MS);
+    assert(q2.reference.config.swing_period_ms == APP_Q1_PERIOD_MS);
+    assert(q2.controller.config.max_duty_permille == APP_Q1_PWM_MAX_PERMILLE);
+    Q1Swing_Stop(&q2, Q1_SWING_USER_STOP);
+  }
+
+  assert(Q1Swing_StartQ2(&q2, 500U, 0U, 0.0F, 1.25F, 0.0F));
+  assert(!Q1Swing_StartQ2(&q2, 600U, 0U, 0.0F, 0.0F, 0.0F));
+  Q1Swing q1 = {0};
+  Q1Swing_Tuning tuning = Q1Swing_DefaultTuning();
+  tuning.target_amplitude_deg = q2.target_amplitude_deg;
+  assert(Q1Swing_StartTuned(&q1, &tuning, 0U, 0.0F, 1.25F, 0.0F));
+  const float angular_rate = 6.2831853F * 1000.0F / APP_Q1_PERIOD_MS;
+  for (uint32_t now = 2U; now < APP_Q2_DURATION_MS; now += 2U) {
+    const float phase = angular_rate * (float)now * 0.001F;
+    const float pitch = 1.25F + 14.0F * sinf(phase);
+    const float rate = 14.0F * angular_rate * cosf(phase);
+    Q1Swing_Step(&q1, now, 0.0F, pitch, rate, true, false);
+    Q1Swing_Step(&q2, now, 0.0F, pitch, rate, true, false);
+    CheckDirectOutput(&q2);
+    assert(q2.state == Q1_SWING_RUNNING);
+    assert(q2.control_phase == q1.control_phase);
+    assert(q2.center_output == q1.center_output);
+    assert(q2.pwm[0] == q1.pwm[0] && q2.pwm[1] == q1.pwm[1]);
+  }
+  assert(q2.control_phase == Q1_SWING_CONTROL_AMPLITUDE);
+  assert(q2.center_output < 0.0F);
+  Q1Swing_Step(&q2, APP_Q2_DURATION_MS, 0.0F, 0.0F, 0.0F, true, false);
+  assert(q2.state == Q1_SWING_FINISHED && q2.reason == Q1_SWING_TIME_UP);
+  assert(q2.run_ms == APP_Q2_DURATION_MS);
+  assert(q2.pwm[0] == 0U && q2.pwm[1] == 0U);
+  Q1Swing_Step(&q1, APP_Q2_DURATION_MS, 0.0F, 0.0F, 0.0F, true, false);
+  assert(q1.state == Q1_SWING_RUNNING);
+}
+
 static void TestCenterCorrection(float offset_deg)
 {
   Q1Swing swing = {0};
@@ -260,6 +307,7 @@ int main(void)
   TestTwoPhaseAmplitudeControl();
   TestTunedTrialUsesRamParameters();
   TestConfiguredRunDuration();
+  TestQ2SharedController();
   TestCenterCorrection(5.0F);
   TestCenterCorrection(-5.0F);
   puts("Q1 trajectory PID tests passed");

@@ -97,6 +97,8 @@ bool Q1Swing_StartTuned(Q1Swing *swing, const Q1Swing_Tuning *tuning,
 void Q1Swing_Stop(Q1Swing *swing, Q1Swing_Reason reason);
 bool Q1Swing_Start(Q1Swing *swing, uint32_t now_ms, float roll_deg,
                     float pitch_deg, float pitch_rate_dps);
+bool Q1Swing_StartQ2(Q1Swing *swing, uint32_t length_mm, uint32_t now_ms,
+                      float roll_deg, float pitch_deg, float pitch_rate_dps);
 void Q1Swing_Step(Q1Swing *swing, uint32_t now_ms, float roll_deg,
                    float pitch_deg, float pitch_rate_dps,
                    bool sample_valid, bool stop_requested);

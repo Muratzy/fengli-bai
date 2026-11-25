@@ -8,7 +8,6 @@
 #include "app_config.h"
 #include "services/imu_frame.h"
 #include "problems/q1_swing.h"
-#include "problems/problem_q2.h"
 #include "services/q1_vcom.h"
 
 #include <math.h>
@@ -311,8 +310,7 @@ static void TrajectoryTask(void *argument)
   (void)argument;
   FusionFrame frame = {0};
   Q1Swing swing = {0};
-  ProblemQ2 q2 = {0};
-  uint8_t selected_problem = 1U;
+  ProblemId selected_problem = PROBLEM_Q1;
   uint32_t last_sample_ms = 0U;
   uint32_t last_remote = 0U;
   uint32_t vcom_trial_id = 0U;
@@ -334,33 +332,32 @@ static void TrajectoryTask(void *argument)
         now - frame.sample.timestamp_ms <= 20U;
     if (last_remote == 0x51315354U) {
       Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
-      ProblemQ2_Stop(&q2, PROBLEM_Q2_USER_STOP);
       g_q1_run_enabled = false;
       last_remote = 0U;
     }
     if (last_remote == 0x5131474FU || last_remote == 0x5132474FU) {
       if (!g_q1_run_enabled) {
-        selected_problem = (last_remote == 0x5132474FU) ? 2U : 1U;
+        selected_problem = (last_remote == 0x5132474FU) ? PROBLEM_Q2 : PROBLEM_Q1;
         vcom_trial_id = 0U;
         bool accepted = false;
         if (sample_fresh && !stop_key && now >= 2000U) {
-          if (selected_problem == 2U) {
-            ProblemQ2_Config config = ProblemQ2_DefaultConfig();
+          if (selected_problem == PROBLEM_Q2) {
             const uint32_t length_mm = g_q2_requested_length_mm;
-            config.line_length_m = (float)length_mm * 0.001F;
-            accepted = ProblemQ2_Start(&q2, &config, now,
-                frame.roll_deg, frame.pitch_deg);
+            accepted = Q1Swing_StartQ2(&swing, length_mm, now, frame.roll_deg,
+                frame.pitch_deg, frame.pitch_rate_dps);
           } else {
             accepted = Q1Swing_Start(&swing, now, frame.roll_deg,
                 frame.pitch_deg, frame.pitch_rate_dps);
           }
-        } else if (selected_problem == 2U) {
-          ProblemQ2_Stop(&q2, PROBLEM_Q2_NOT_CENTERED);
         } else {
+          swing = (Q1Swing){0};
           Q1Swing_Stop(&swing, Q1_SWING_NOT_CENTERED);
         }
         taskENTER_CRITICAL();
-        if (g_q1_remote_command == 0x51315354U) accepted = false;
+        if (accepted && g_q1_remote_command == 0x51315354U) {
+          Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+          accepted = false;
+        }
         if (accepted) {
           g_motor_fault_reason = 0U;
           g_q1_run_enabled = true;
@@ -381,23 +378,18 @@ static void TrajectoryTask(void *argument)
           if (swing.state == Q1_SWING_RUNNING) {
             Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
           }
-          if (q2.state == PROBLEM_Q2_RUNNING) {
-            ProblemQ2_Stop(&q2, PROBLEM_Q2_USER_STOP);
-          }
           break;
         case Q1_VCOM_RESET:
-          if (g_q1_run_enabled ||
-              swing.state == Q1_SWING_RUNNING || q2.state == PROBLEM_Q2_RUNNING) {
+          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING) {
             reply.error = "BUSY";
           } else {
             swing = (Q1Swing){0};
-            selected_problem = 1U;
+            selected_problem = PROBLEM_Q1;
             vcom_trial_id = 0U;
           }
           break;
         case Q1_VCOM_START:
-          if (g_q1_run_enabled ||
-              swing.state == Q1_SWING_RUNNING || q2.state == PROBLEM_Q2_RUNNING) {
+          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING) {
             reply.error = "BUSY";
           } else if (!sample_fresh || stop_key || now < 2000U ||
                      fabsf(frame.roll_deg) > APP_Q1_START_ANGLE_DEG ||
@@ -408,7 +400,7 @@ static void TrajectoryTask(void *argument)
                          frame.roll_deg, frame.pitch_deg, frame.pitch_rate_dps)) {
             reply.error = "PARAMETERS";
           } else {
-            selected_problem = 1U;
+            selected_problem = PROBLEM_Q1;
             taskENTER_CRITICAL();
             if (g_q1_remote_command == 0x51315354U) {
               Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
@@ -424,7 +416,7 @@ static void TrajectoryTask(void *argument)
       }
       (void)xQueueSend(g_vcom_reply_queue, &reply, 0U);
     }
-    if (selected_problem == 1U && swing.state == Q1_SWING_RUNNING) {
+    if (swing.state == Q1_SWING_RUNNING) {
       if (g_motor_fault_reason != 0U) {
         Q1Swing_Stop(&swing, (Q1Swing_Reason)g_motor_fault_reason);
       } else if (!sample_fresh && now - last_sample_ms > 20U) {
@@ -436,22 +428,8 @@ static void TrajectoryTask(void *argument)
         Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
       }
     }
-    if (selected_problem == 2U && q2.state == PROBLEM_Q2_RUNNING) {
-      if (g_motor_fault_reason != 0U) {
-        ProblemQ2_Stop(&q2, (ProblemQ2_Reason)g_motor_fault_reason);
-      } else if (!sample_fresh && now - last_sample_ms > 20U) {
-        ProblemQ2_Stop(&q2, PROBLEM_Q2_SAMPLE_STALE);
-      } else if (sample_fresh) {
-        ProblemQ2_Step(&q2, now, frame.roll_deg, frame.pitch_deg,
-            frame.roll_rate_dps, frame.pitch_rate_dps, true, stop_key);
-      } else if (stop_key) {
-        ProblemQ2_Stop(&q2, PROBLEM_Q2_USER_STOP);
-      }
-    }
     if (received) last_sample_ms = frame.sample.timestamp_ms;
-    if ((selected_problem == 1U && swing.state != Q1_SWING_RUNNING) ||
-        (selected_problem == 2U && q2.state != PROBLEM_Q2_RUNNING))
-      g_q1_run_enabled = false;
+    if (swing.state != Q1_SWING_RUNNING) g_q1_run_enabled = false;
 
     PendulumTelemetry command = {0};
     command.timestamp_ms = received ? frame.sample.timestamp_ms : now;
@@ -464,91 +442,62 @@ static void TrajectoryTask(void *argument)
     command.accel_weight = frame.accel_weight;
     command.pitch_rate_dps = frame.pitch_rate_dps;
     command.roll_rate_dps = frame.roll_rate_dps;
-    command.problem_id = selected_problem;
-    if (selected_problem == 2U) {
-      command.q1_state = (uint8_t)q2.state;
-      command.q1_reason = (uint8_t)q2.reason;
-      command.q1_switches = q2.switches;
-      command.q1_left_peak_deg = q2.left_peak_deg;
-      command.q1_right_peak_deg = q2.right_peak_deg;
-      command.q1_run_ms = q2.run_ms;
-      command.target_roll_deg = q2.target_roll_deg;
-      command.target_pitch_deg = q2.target_pitch_deg;
-      command.target_length_mm = (uint32_t)(q2.config.line_length_m * 1000.0F + 0.5F);
-      command.target_pitch_rate_dps = q2.target_pitch_rate_dps;
-      command.filtered_pitch_rate_error_dps = q2.controller.axis_pid[1].derivative;
-      command.pitch_integrating = q2.pitch_integrating ? 1U : 0U;
-      command.pitch_kp = q2.config.pitch_pid.kp;
-      command.pitch_ki = q2.config.pitch_pid.ki;
-      command.pitch_kd = q2.config.pitch_pid.kd;
-      command.reference_period_ms = q2.config.period_ms;
-      command.reference_ramp_ms = q2.config.amplitude_ramp_ms;
-      command.q1_target_position_m = q2.target_position_m;
-      command.q1_target_velocity_mps = q2.target_velocity_mps;
-      memcpy(command.pid_p, q2.control_output.p, sizeof(command.pid_p));
-      memcpy(command.pid_i, q2.control_output.i, sizeof(command.pid_i));
-      memcpy(command.pid_d, q2.control_output.d, sizeof(command.pid_d));
-      memcpy(command.pid_output, q2.control_output.axis_output, sizeof(command.pid_output));
-    } else {
-      command.q1_state = (uint8_t)swing.state;
-      command.q1_reason = (uint8_t)swing.reason;
-      command.q1_switches = swing.switches;
-      command.q1_predicted_peak_deg = swing.predicted_peak_deg;
-      command.q1_left_peak_deg = swing.left_peak_deg;
-      command.q1_right_peak_deg = swing.right_peak_deg;
-      command.q1_run_ms = swing.run_ms;
-      command.q1_duration_ms = swing.reference.config.duration_ms;
-      command.target_roll_deg = swing.target_roll_deg;
-      command.target_pitch_deg = swing.target_pitch_deg;
-      command.q1_target_position_m = swing.target_position_m;
-      command.q1_target_velocity_mps = swing.target_velocity_mps;
-      command.target_pitch_rate_dps = swing.target_pitch_rate_dps;
-      command.filtered_pitch_rate_error_dps =
-          swing.controller.axis_pid[PENDULUM_AXIS_PITCH].derivative;
-      command.pitch_integrating = swing.pitch_integrating ? 1U : 0U;
-      command.pitch_kp = swing.controller.config.pitch_pid.kp;
-      command.pitch_ki = swing.controller.config.pitch_pid.ki;
-      command.pitch_kd = swing.controller.config.pitch_pid.kd;
-      command.reference_period_ms = swing.reference.config.swing_period_ms;
-      command.reference_ramp_ms = swing.reference.config.startup_ramp_ms;
-      command.q1_control_phase = (uint8_t)swing.control_phase;
-      command.q1_amplitude_deg = swing.amplitude_estimate_deg;
-      command.q1_amplitude_target_deg = swing.target_amplitude_deg;
-      command.q1_amplitude_error_deg = swing.amplitude_error_deg;
-      command.q1_amplitude_output = swing.amplitude_feedback_output +
-          swing.amplitude_compensation_output;
-      command.q1_amplitude_blend_permille = swing.amplitude_blend_permille;
-      command.q1_amplitude_ka = swing.tuning.amplitude_kp;
-      command.q1_amplitude_kcomp = swing.tuning.damping_compensation;
-      command.q1_vcom_trial_id = vcom_trial_id;
-      command.q1_center_deg = swing.center_estimate_deg;
-      command.q1_center_output = swing.center_output;
-      memcpy(command.pid_p, swing.control_output.p, sizeof(command.pid_p));
-      memcpy(command.pid_i, swing.control_output.i, sizeof(command.pid_i));
-      memcpy(command.pid_d, swing.control_output.d, sizeof(command.pid_d));
-      memcpy(command.pid_output, swing.control_output.axis_output,
-          sizeof(command.pid_output));
-      command.target_length_mm = swing.reference.config.line_length_m > 0.0F ?
-          (uint32_t)(swing.reference.config.line_length_m * 1000.0F + 0.5F) :
-          ProblemApi_DefaultParams(PROBLEM_Q1).line_length_mm;
-    }
+    command.problem_id = (uint8_t)selected_problem;
+    command.q1_state = (uint8_t)swing.state;
+    command.q1_reason = (uint8_t)swing.reason;
+    command.q1_switches = swing.switches;
+    command.q1_predicted_peak_deg = swing.predicted_peak_deg;
+    command.q1_left_peak_deg = swing.left_peak_deg;
+    command.q1_right_peak_deg = swing.right_peak_deg;
+    command.q1_run_ms = swing.run_ms;
+    command.q1_duration_ms = swing.reference.config.duration_ms;
+    command.target_roll_deg = swing.target_roll_deg;
+    command.target_pitch_deg = swing.target_pitch_deg;
+    command.q1_target_position_m = swing.target_position_m;
+    command.q1_target_velocity_mps = swing.target_velocity_mps;
+    command.target_pitch_rate_dps = swing.target_pitch_rate_dps;
+    command.filtered_pitch_rate_error_dps =
+        swing.controller.axis_pid[PENDULUM_AXIS_PITCH].derivative;
+    command.pitch_integrating = swing.pitch_integrating ? 1U : 0U;
+    command.pitch_kp = swing.controller.config.pitch_pid.kp;
+    command.pitch_ki = swing.controller.config.pitch_pid.ki;
+    command.pitch_kd = swing.controller.config.pitch_pid.kd;
+    command.reference_period_ms = swing.reference.config.swing_period_ms;
+    command.reference_ramp_ms = swing.reference.config.startup_ramp_ms;
+    command.q1_control_phase = (uint8_t)swing.control_phase;
+    command.q1_amplitude_deg = swing.amplitude_estimate_deg;
+    command.q1_amplitude_target_deg = swing.target_amplitude_deg;
+    command.q1_amplitude_error_deg = swing.amplitude_error_deg;
+    command.q1_amplitude_output = swing.amplitude_feedback_output +
+        swing.amplitude_compensation_output;
+    command.q1_amplitude_blend_permille = swing.amplitude_blend_permille;
+    command.q1_amplitude_ka = swing.tuning.amplitude_kp;
+    command.q1_amplitude_kcomp = swing.tuning.damping_compensation;
+    command.q1_vcom_trial_id = vcom_trial_id;
+    command.q1_center_deg = swing.center_estimate_deg;
+    command.q1_center_output = swing.center_output;
+    memcpy(command.pid_p, swing.control_output.p, sizeof(command.pid_p));
+    memcpy(command.pid_i, swing.control_output.i, sizeof(command.pid_i));
+    memcpy(command.pid_d, swing.control_output.d, sizeof(command.pid_d));
+    memcpy(command.pid_output, swing.control_output.axis_output,
+        sizeof(command.pid_output));
+    command.target_length_mm = swing.reference.config.line_length_m > 0.0F ?
+        (uint32_t)(swing.reference.config.line_length_m * 1000.0F + 0.5F) :
+        ProblemApi_DefaultParams(selected_problem).line_length_mm;
     command.mode = (command.q1_state == Q1_SWING_RUNNING) ?
-        ((selected_problem == 2U) ? PENDULUM_MODE_Q2_LINE : PENDULUM_MODE_LINE) :
+        ((selected_problem == PROBLEM_Q2) ? PENDULUM_MODE_Q2_LINE : PENDULUM_MODE_LINE) :
         (command.q1_state == Q1_SWING_FAULT) ? PENDULUM_MODE_Q1_BLOCKED : PENDULUM_MODE_READY;
     if (g_imu_ready == pdFALSE) command.mode = PENDULUM_MODE_IMU_FAULT;
     if (sample_fresh && g_q1_run_enabled) {
-      memcpy(command.pwm_permille, (selected_problem == 2U) ? q2.pwm : swing.pwm,
-          sizeof(command.pwm_permille));
+      memcpy(command.pwm_permille, swing.pwm, sizeof(command.pwm_permille));
     }
     if (received) command.bus_current_adc = Board_ReadBusCurrentAdc();
     taskENTER_CRITICAL();
     g_problem_status = (ProblemStatus){
-        .id = (ProblemId)selected_problem,
+        .id = selected_problem,
         .state = (ProblemStatusCode)command.q1_state,
         .reason = command.q1_reason, .elapsed_ms = command.q1_run_ms,
-        .line_length_mm = (selected_problem == 2U) ?
-            (uint32_t)(q2.config.line_length_m * 1000.0F + 0.5F) :
-            command.target_length_mm};
+        .line_length_mm = command.target_length_mm};
     g_pending_start_command = 0U;
     taskEXIT_CRITICAL();
     (void)xQueueOverwrite(g_control_queue, &command);
@@ -602,16 +551,12 @@ static void MotorTask(void *argument)
       g_motor_fault_reason = Q1_SWING_SAMPLE_STALE;
       active = false;
     }
-    const uint16_t duty_limit = (command.mode == PENDULUM_MODE_Q2_LINE) ?
-        APP_Q2_PWM_MAX_PERMILLE : APP_Q1_PWM_MAX_PERMILLE;
-    const uint32_t run_limit_ms = (command.mode == PENDULUM_MODE_Q2_LINE) ?
-        APP_Q2_DURATION_MS : command.q1_duration_ms;
     const bool valid_output = command.pwm_permille[2] == 0U &&
         command.pwm_permille[3] == 0U &&
-        command.pwm_permille[0] <= duty_limit &&
-        command.pwm_permille[1] <= duty_limit &&
+        command.pwm_permille[0] <= APP_Q1_PWM_MAX_PERMILLE &&
+        command.pwm_permille[1] <= APP_Q1_PWM_MAX_PERMILLE &&
         (command.pwm_permille[0] == 0U || command.pwm_permille[1] == 0U);
-    if (active && (!valid_output || command.q1_run_ms >= run_limit_ms ||
+    if (active && (!valid_output || command.q1_run_ms >= command.q1_duration_ms ||
         fabsf(command.pitch_deg) > APP_Q1_STOP_PITCH_DEG ||
         fabsf(command.roll_deg) > APP_Q1_STOP_ROLL_DEG)) {
       g_motor_fault_reason = Q1_SWING_ANGLE_LIMIT;
@@ -708,8 +653,7 @@ static void TelemetryTask(void *argument)
     if (xQueueReceive(g_telemetry_queue, &data, pdMS_TO_TICKS(20U)) != pdPASS) {
       continue;
     }
-    const unsigned pwm_limit = (data.problem_id == PROBLEM_Q2) ?
-        APP_Q2_PWM_MAX_PERMILLE : (data.problem_id == PROBLEM_Q1) ?
+    const unsigned pwm_limit = (data.problem_id == PROBLEM_Q1 || data.problem_id == PROBLEM_Q2) ?
         APP_Q1_PWM_MAX_PERMILLE : 0U;
     const int length = snprintf(line, sizeof(line),
         "%lu,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,"

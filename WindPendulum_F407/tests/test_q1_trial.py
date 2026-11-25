@@ -89,6 +89,18 @@ class TrialTests(unittest.TestCase):
                 captured = list(csv.DictReader(f))
             self.assertAlmostEqual(float(captured[20]['pitch_error_deg']),0.2)
 
+    def test_shared_q2_controller_is_identified_before_transition(self):
+        rows = [
+            make_row(mode=8, problem_id=2, target_length_mm=400,
+                     q1_state=1, q1_amplitude_target_cdeg=1142),
+            make_row(mode=2, problem_id=2, target_length_mm=400,
+                     q1_state=2, q1_reason=1, q1_run_ms=15000),
+        ]
+        report = trial.analyze(rows)
+        self.assertEqual(report['controller'], 'q1_two_phase_amplitude')
+        self.assertEqual(report['q1_control_phase_rows']['startup_pid'], 1)
+        self.assertEqual(report['first_stop']['run_ms'], 15000)
+
     def test_legacy_rows_and_q2_reference_cycle_metrics(self):
         import math
         row = make_row()

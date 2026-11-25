@@ -80,6 +80,20 @@ bool Q1Swing_Start(Q1Swing *swing, uint32_t now_ms, float roll_deg,
                             pitch_rate_dps);
 }
 
+bool Q1Swing_StartQ2(Q1Swing *swing, uint32_t length_mm, uint32_t now_ms,
+                      float roll_deg, float pitch_deg, float pitch_rate_dps)
+{
+  const bool valid_length = length_mm >= APP_Q2_MIN_LENGTH_MM &&
+      length_mm <= APP_Q2_MAX_LENGTH_MM;
+  ProblemQ1_Config reference_config = ProblemQ1_DefaultConfig();
+  reference_config.line_length_m = (float)length_mm * 0.001F;
+  Q1Swing_Tuning tuning = Q1Swing_DefaultTuning();
+  tuning.target_amplitude_deg = ProblemQ1_TargetAmplitudeDeg(&reference_config);
+  tuning.duration_ms = APP_Q2_DURATION_MS;
+  return Q1Swing_StartTuned(swing, valid_length ? &tuning : NULL, now_ms,
+                            roll_deg, pitch_deg, pitch_rate_dps);
+}
+
 bool Q1Swing_StartTuned(Q1Swing *swing, const Q1Swing_Tuning *tuning,
                         uint32_t now_ms, float roll_deg, float pitch_deg,
                         float pitch_rate_dps)

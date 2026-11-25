@@ -3,7 +3,6 @@
 #include "FreeRTOS.h"
 #include "main.h"
 #include "pendulum_app.h"
-#include "problems/problem_q2.h"
 #include "app_config.h"
 #include "queue.h"
 #include "task.h"
@@ -354,6 +353,8 @@ void PendulumUI_Task(void *argument)
   PendulumDisplayState incoming;
   TickType_t wake_time = xTaskGetTickCount();
   uint32_t length_cm = APP_Q2_DEFAULT_LENGTH_MM / 10U;
+  const uint32_t min_length_cm = APP_Q2_MIN_LENGTH_MM / 10U;
+  const uint32_t max_length_cm = APP_Q2_MAX_LENGTH_MM / 10U;
   uint8_t previous_keys = 0U;
   uint8_t screen = 0U; /* 0=setup, 1=running, 2=result */
 
@@ -366,14 +367,16 @@ void PendulumUI_Task(void *argument)
   for (;;) {
     if (xQueueReceive(display_queue, &incoming, 0U) == pdPASS) {
       g_display_state = incoming;
-      if (incoming.telemetry.problem_id == PROBLEM_Q2 &&
-          incoming.telemetry.target_length_mm >= 300U &&
-          incoming.telemetry.target_length_mm <= 600U) {
-        length_cm = incoming.telemetry.target_length_mm / 10U;
-      }
-      if (screen == 1U && incoming.telemetry.problem_id == PROBLEM_Q2 &&
-          incoming.telemetry.q1_state != PROBLEM_Q2_RUNNING) {
-        if (incoming.telemetry.q1_state >= PROBLEM_Q2_FINISHED) screen = 2U;
+    }
+    ProblemStatus status;
+    (void)PendulumApp_GetProblemStatus(&status);
+    if (status.id == PROBLEM_Q2) {
+      if (status.state == PROBLEM_STATUS_RUNNING) {
+        screen = 1U;
+        length_cm = status.line_length_mm / 10U;
+      } else if (screen == 1U && status.state >= PROBLEM_STATUS_FINISHED &&
+                 status.state <= PROBLEM_STATUS_FAULT) {
+        screen = 2U;
       }
     }
 
@@ -385,8 +388,10 @@ void PendulumUI_Task(void *argument)
     previous_keys = keys;
 
     if (screen != 1U) {
-      if ((pressed & 2U) != 0U && length_cm < 60U) length_cm += 10U;
-      if ((pressed & 4U) != 0U && length_cm > 30U) length_cm -= 10U;
+      if ((pressed & 2U) != 0U && length_cm < max_length_cm)
+        length_cm = (length_cm / 10U + 1U) * 10U;
+      if ((pressed & 4U) != 0U && length_cm > min_length_cm)
+        length_cm = ((length_cm - 1U) / 10U) * 10U;
       if ((pressed & 1U) != 0U &&
           PendulumApp_RequestQ2Start(length_cm * 10U)) screen = 1U;
     } else if ((pressed & 4U) != 0U) {
@@ -415,12 +420,12 @@ void PendulumUI_Task(void *argument)
           actual_tenths / 10L, actual_tenths % 10L);
       OLED_DrawUTF8(2, 30, line);
       (void)snprintf(line, sizeof(line), "RUN %lu ms",
-          (unsigned long)g_display_state.telemetry.q1_run_ms);
+          (unsigned long)status.elapsed_ms);
       OLED_DrawUTF8(2, 42, line);
-      OLED_DrawUTF8(2, 54, "KEY3 STOP  UART PID");
+      OLED_DrawUTF8(2, 54, "KEY3 STOP");
     } else {
-      const char *result = (g_display_state.telemetry.q1_state == PROBLEM_Q2_FINISHED) ?
-          "TIME UP" : (g_display_state.telemetry.q1_state == PROBLEM_Q2_STOPPED) ?
+      const char *result = (g_display_state.telemetry.q1_state == PROBLEM_STATUS_FINISHED) ?
+          "TIME UP" : (g_display_state.telemetry.q1_state == PROBLEM_STATUS_STOPPED) ?
           "STOPPED" : "FAULT";
       (void)snprintf(line, sizeof(line), "%s R%u", result,
           (unsigned)g_display_state.telemetry.q1_reason);
