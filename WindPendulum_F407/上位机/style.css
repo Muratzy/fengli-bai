@@ -112,6 +112,9 @@ h3 { font-size: .87rem; }
   border-bottom: 1px solid var(--line);
 }
 .top p { margin-top: .35rem; color: var(--muted); font-size: .83rem; }
+.connection-tools { display: flex; align-items: end; justify-content: flex-end; gap: .7rem; flex-wrap: wrap; }
+.transport-mode { display: grid; gap: .2rem; min-width: 8.7rem; color: var(--muted); font-size: .72rem; }
+.transport-mode select { width: 100%; padding: .36rem .48rem; font-size: .78rem; }
 .connection,.phase {
   display: inline-flex;
   align-items: center;
@@ -295,6 +298,8 @@ dialog dl dd { margin: 0; font: .86rem ui-monospace, monospace; }
 }
 @media (max-width: 490px) {
   .top { padding-right: .85rem; }
+  .connection-tools { align-items: stretch; gap: .4rem; }
+  .transport-mode { min-width: 7.6rem; }
   .trajectory canvas { height: 165px; }
   main { padding-inline: .65rem; }
   .panel { padding: .85rem; }

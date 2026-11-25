@@ -1,5 +1,5 @@
 import { isClockReset, parseTelemetry, snapshotFields, tuningKeys } from "./protocol.mjs";
-import { Vcom } from "./serial.mjs";
+import { BluetoothGatt, Vcom } from "./serial.mjs";
 import { archiveTrial, historyOperation, openArchiveSettings, openHistory,
   trialCsv, trialFilename } from "./storage.mjs";
 import { chart, measuredColor, referenceColor, secondaryColor } from "./charts.mjs";
@@ -11,6 +11,7 @@ const durationInput = form.elements.durationSeconds;
 const gainKeys = tuningKeys.filter(key => key !== "targetDeg");
 const degreesPerRadian = 180 / Math.PI;
 const controls = Object.fromEntries(["connect", "start", "stop", "reset"].map(id => [id, byId(id)]));
+const connectionMode = byId("connection-mode");
 const states = ["待机", "运行中", "已完成", "已停止", "保护停机"];
 const reasons = ["", "到时", "手动停止", "数据过期", "超角或超速", "未检测到换向",
   "EN 低电平", "起摆条件不符", "配置无效"];
@@ -45,27 +46,40 @@ let archiveSettings;
 let archiveDirectory;
 let archiveQueue = Promise.resolve();
 const archivedRecords = new Set();
+let transportMode = localStorage.getItem("wind-pendulum-transport") || "jlink";
+connectionMode.value = transportMode;
 
 function notify(message, error = false) {
   byId("message").textContent = message;
   byId("message").classList.toggle("error", error);
 }
 
+function telemetryAgeLimit(periods, minimumMs) {
+  const periodMs = boardConfig?.telemetryMs ?? (transportMode === "bluetooth" ? 1000 : 20);
+  return Math.max(minimumMs, periods * periodMs);
+}
+
 function updateControls() {
-  const fresh = latest && performance.now() - lastRx < 1000;
+  const fresh = latest && performance.now() - lastRx < telemetryAgeLimit(3, 1000);
   const idle = fresh && latest.state !== 1;
-  controls.connect.textContent = serial ? "断开串口" : "连接串口";
-  controls.connect.disabled = connecting || (!navigator.serial && !serial);
+  const canConnect = transportMode === "bluetooth" ? Boolean(navigator.bluetooth) :
+    Boolean(navigator.serial);
+  controls.connect.textContent = serial ? "断开连接" :
+    transportMode === "bluetooth" ? "连接蓝牙" : "连接 J-Link";
+  controls.connect.disabled = connecting || (!canConnect && !serial);
   controls.start.disabled = !(serial && boardConfig?.mode === 1 && database && idle &&
     [2, 7].includes(latest.mode) && !starting && !active && !resetting && !stopping);
   controls.stop.disabled = !(serial && boardConfig && !stopping);
   controls.reset.disabled = !(serial && boardConfig && idle && !starting && !active && !resetting && !stopping);
+  connectionMode.disabled = Boolean(serial || connecting || active);
   for (const field of form.querySelectorAll("input")) field.disabled = Boolean(starting || active);
   durationInput.disabled = Boolean(starting || active || (boardConfig && !boardConfig.maxDurationMs));
   const connected = byId("connection");
   connected.dataset.state = serial && fresh ? "ready" : "idle";
-  connected.textContent = connecting ? "正在连接" : !serial ? "串口未连接" :
-    !fresh ? "VCOM · 等待遥测" : boardConfig ? "VCOM · 在线" : "VCOM · 只读";
+  const transportLabel = transportMode === "bluetooth" ? "蓝牙" : "J-Link";
+  connected.textContent = connecting ? "正在连接" : !serial ?
+    transportLabel + " 未连接" : !fresh ? transportLabel + (latest ? " · 遥测超时" : " · 等待遥测") :
+    boardConfig ? transportLabel + " · 在线" : transportLabel + " · 只读";
   byId("board-state").textContent = fresh
     ? (latest.mode <= 1 ? "IMU 未就绪" : states[latest.state]) : "—";
   byId("run-id").textContent = shownId ?? "—";
@@ -215,26 +229,46 @@ async function disconnect(message, isError = false) {
   latest = undefined;
   lastRx = 0;
   originTime = undefined;
-  if (active) finish("串口断开，记录未完成");
+  if (active) finish("连接断开，记录未完成");
   await current?.close();
   notify(message, isError);
   updateControls();
 }
 
+connectionMode.addEventListener("change", async () => {
+  if (serial || connecting || active) {
+    connectionMode.value = transportMode;
+    notify("实验或连接进行中，不能切换连接方式。", true);
+    return;
+  }
+  transportMode = connectionMode.value;
+  localStorage.setItem("wind-pendulum-transport", transportMode);
+  updateControls();
+  const label = transportMode === "bluetooth" ? "蓝牙 GATT" : "J-Link VCOM";
+  notify(label + " 已选中。点击连接开始监测。");
+});
+
 controls.connect.addEventListener("click", async () => {
   if (serial) {
-    await disconnect("串口已断开。");
+    await disconnect(transportMode === "bluetooth" ? "蓝牙已断开。" : "J-Link 已断开。");
     return;
   }
   connecting = true;
   updateControls();
   let current;
   try {
-    const port = await navigator.serial.requestPort();
-    current = new Vcom();
-    await current.connect(port, receiveTelemetry, error => {
-      if (serial === current) void disconnect("串口断开 · " + error.message, true);
-    });
+    if (transportMode === "bluetooth") {
+      current = new BluetoothGatt();
+      await current.connect(receiveTelemetry, error => {
+        if (serial === current) void disconnect("蓝牙断开 · " + error.message, true);
+      });
+    } else {
+      const port = await navigator.serial.requestPort();
+      current = new Vcom();
+      await current.connect(port, receiveTelemetry, error => {
+        if (serial === current) void disconnect("J-Link 断开 · " + error.message, true);
+      });
+    }
     serial = current;
     originTime = undefined;
     live = [];
@@ -251,11 +285,11 @@ controls.connect.addEventListener("click", async () => {
       updateTargetAngle();
       notify("STM32 已连接。参数随下次启动下发。");
     } catch (error) {
-      if (serial === current) notify("串口已打开。当前固件未确认调参协议，可查看遥测。", true);
+      if (serial === current) notify("连接已打开，INFO 失败 · " + error.message, true);
     }
   } catch (error) {
     await current?.close();
-    if (error.name !== "NotFoundError") notify("无法打开串口 · " + error.message, true);
+    if (error.name !== "NotFoundError") notify("无法打开连接 · " + error.message, true);
   } finally {
     connecting = false;
     updateControls();
@@ -310,7 +344,7 @@ async function startTrial() {
       if (!active) break;
       addTrialFrame(row);
     }
-    if (active && serial !== current) finish("串口断开，记录未完成");
+    if (active && serial !== current) finish("连接断开，记录未完成");
     else if (active) {
       notify(typeof record.id === "number" ? shownId + " 已启动，参数已归档。" :
         "本地存储不可用，请在本轮结束后下载数据。", typeof record.id !== "number");
@@ -619,9 +653,10 @@ setInterval(() => {
     drawTrajectory();
     dirty = false;
   }
-  if (active && performance.now() - lastRx > 2000) {
+  const trialTimeoutMs = telemetryAgeLimit(5, 2000);
+  if (active && performance.now() - lastRx > trialTimeoutMs) {
     finish("遥测中断，记录未完成");
-    notify("超过 2 秒未收到遥测。可按板上 KEY3。", true);
+    notify("超过 " + trialTimeoutMs / 1000 + " 秒未收到遥测。可按板上 KEY3。", true);
   }
   updateControls();
 }, 100);
@@ -666,7 +701,12 @@ updateNavigation();
 updateSpanLimits();
 updateTargetAngle();
 updateControls();
-if (!navigator.serial) notify("请用 Chrome 或 Edge 打开 localhost 地址以连接 Web Serial。", true);
+if (!navigator.serial && !navigator.bluetooth) {
+  notify("当前浏览器不支持 J-Link 串口或蓝牙 GATT。", true);
+} else {
+  notify((transportMode === "bluetooth" ? "蓝牙 GATT" : "J-Link VCOM") +
+    " 已选中。点击连接开始监测。");
+}
 try {
   database = await openHistory();
   const records = await historyOperation(database, "readonly", store => store.getAll());

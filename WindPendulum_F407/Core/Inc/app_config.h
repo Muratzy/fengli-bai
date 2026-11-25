@@ -60,6 +60,10 @@
 #define APP_Q1_STOP_PITCH_DEG           25.0F
 #define APP_Q1_STOP_ROLL_DEG             8.0F
 #define APP_Q1_TELEMETRY_PERIOD_MS      20U
+#ifndef APP_BLUETOOTH_UART_BAUD
+#define APP_BLUETOOTH_UART_BAUD        9600U
+#endif
+#define APP_BLUETOOTH_TELEMETRY_PERIOD_MS 1000U
 #define APP_Q1_START_ANGLE_DEG           7.0F
 #define APP_Q1_PWM_MAX_PERMILLE        850U
 #define APP_Q1_CONTROL_MODE_PID           0U

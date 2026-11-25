@@ -109,6 +109,8 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
     const float target = tuning.target_amplitude_deg > 0.0F ?
         tuning.target_amplitude_deg : ProblemQ1_TargetAmplitudeDeg(&config);
     const uint32_t duration_ms = tuning.duration_ms ? tuning.duration_ms : config.duration_ms;
+    const uint32_t telemetry_period_ms = reply->telemetry_period_ms ?
+        reply->telemetry_period_ms : APP_Q1_TELEMETRY_PERIOD_MS;
     length = snprintf(line, size,
         "!WP1,%lu,OK,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
         "%lu,%lu,%lu,%u,%lu,%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%lu,%u,%lu,%lu,%u,%lu,%lu,%u,%u",
@@ -124,7 +126,7 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
         Milli(APP_Q1_STOP_ROLL_DEG), Milli(APP_Q1_STOP_RATE_DPS),
         Milli(APP_Q1_AMPLITUDE_GAIN_LIMIT), Milli(config.ground_height_m),
         Milli(APP_Q1_PITCH_KI), APP_Q1_CONTROL_MODE, Milli(APP_Q1_INTEGRAL_LIMIT),
-        APP_Q1_TELEMETRY_PERIOD_MS, Milli(APP_Q1_AMPLITUDE_RELEASE_RATIO),
+        (unsigned)telemetry_period_ms, Milli(APP_Q1_AMPLITUDE_RELEASE_RATIO),
         Milli(APP_Q1_CENTER_KP), APP_Q1_CENTER_LIMIT_PERMILLE,
         Milli(APP_Q1_CENTER_FILTER_S), Milli(APP_Q1_CENTER_TURN_RATE_DPS),
         APP_Q1_MIN_DURATION_MS, APP_Q1_MAX_DURATION_MS);

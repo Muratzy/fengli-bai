@@ -23,7 +23,15 @@
   </aside>
   <header class="top">
     <div><h1>Q1 实验台</h1><p>STM32F407 风力摆控制</p></div>
-    <span id="connection" class="connection" role="status">串口未连接</span>
+    <div class="connection-tools">
+      <label class="transport-mode">连接方式
+        <select id="connection-mode" aria-label="连接方式">
+          <option value="jlink">J-Link VCOM</option>
+          <option value="bluetooth">蓝牙 GATT</option>
+        </select>
+      </label>
+      <span id="connection" class="connection" role="status">J-Link 未连接</span>
+    </div>
   </header>
   <main id="overview">
     <div class="setup">

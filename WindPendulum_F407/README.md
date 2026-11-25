@@ -26,6 +26,7 @@
 | ICM-45686 | SPI2 PB10/PC2/PC3，PE7 CS；SPI Mode 3，2.625 MHz；传感器量程 ±16 g、±2000 dps，ODR 800 Hz |
 | 按键 | KEY1=PC0、KEY2=PC1、KEY3=PC13；台架为固定30%/斜坡20–80%/停止，题目菜单保留确认/上/下，低电平有效 |
 | 调试串口 | USART1 PA9/PA10，115200 8-N-1；当前 USB-UART 枚举为 COM9 |
+| 蓝牙串口 | USART6 PC6/PC7（板上 TX1/RX1），9600 8-N-1；HC-05 BLE GATT |
 | 扩展串口 | USART2 PD5/PD6，115200 8-N-1 |
 
 完整引脚及预留功能见 `硬件引脚分配.md`。SWD 保留 PA13/PA14，USB 和 TF 卡引脚不分配给本固件。
@@ -42,7 +43,7 @@ IMU 任务以 500 Hz 为目标轮询数据。2026-11-23 按用户要求取消上
 
 ## FreeRTOS 与输出限制
 
-任务链为 `imu -> fusion -> trajectory -> motor -> telemetry`，UI 通过队列读取状态。[Q1 网页上位机](上位机/README.md) 支持通过 J-Link VCOM 连续调参、启停、看实时曲线和保存试次。Q1/Q2 使用 `Tools/q1_trial.py` 采集，板端新版输出 70 列 CSV，包含 PWM 上限、网页试次 ID、中心估计和居中修正。每次试验自动保存控制曲线与分析指标。Q2 专用数据目录为 `数据记录/串口/Q2/`。Python 工具的串口路径只接收遥测，启停走 J-Link RAM 命令。字段及流程见 [电脑串口采集](电脑串口采集.md)。
+任务链为 `imu -> fusion -> trajectory -> motor -> telemetry`，UI 通过队列读取状态。[Q1 网页上位机](上位机/README.md) 支持通过 J-Link VCOM 或 HC-05 BLE GATT 连续调参、启停、看实时曲线和保存试次。两种网页链路共享 WP1 协议。Q1/Q2 使用 `Tools/q1_trial.py` 采集，板端新版输出 70 列 CSV，包含 PWM 上限、网页试次 ID、中心估计和居中修正。每次试验自动保存控制曲线与分析指标。Q2 专用数据目录为 `数据记录/串口/Q2/`。Python 工具的串口路径只接收遥测，启停走 J-Link RAM 命令。字段及流程见 [电脑串口采集](电脑串口采集.md)。
 
 统一任务 API 为 `PendulumApp_RequestProblemStart(id,&params)`、`PendulumApp_RequestProblemStop()`、`PendulumApp_GetProblemStatus(&status)`。两问默认使用 28/0/7 的实测角速度阻尼 PD 起摆，D 滤波时间常数为 50 ms。幅值估计达到目标的 90% 并保持 250 ms 后，以 1642 ms 平滑混合进入幅值反馈和居中修正，默认幅值 PID 为 2/0/0、阻尼补偿为 0.5。控制随新的有效融合数据更新，名义间隔 2 ms。停止与故障立即归零，Roll 轴闭环禁用。 [项目逻辑框架](项目逻辑框架.md)
 

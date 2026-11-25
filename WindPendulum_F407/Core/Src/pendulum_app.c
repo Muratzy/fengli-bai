@@ -38,28 +38,70 @@ static QueueHandle_t g_telemetry_queue;
 static QueueHandle_t g_display_queue;
 #if !APP_LASER_CAL_CAPTURE_ENABLED
 #define Q1_RX_CAPACITY 256U
-static QueueHandle_t g_vcom_reply_queue;
-static uint8_t g_vcom_rx[Q1_RX_CAPACITY];
-static volatile uint32_t g_vcom_write;
-static volatile uint32_t g_vcom_read;
+typedef struct {
+  QueueHandle_t replies;
+  uint8_t rx[Q1_RX_CAPACITY];
+  volatile uint32_t write_index;
+  volatile uint32_t read_index;
+  char line[Q1_VCOM_LINE_SIZE];
+  size_t line_length;
+  bool line_overflow;
+} HostSerial;
+
+static HostSerial g_vcom;
+static HostSerial g_bluetooth;
+static char g_bluetooth_tx[768];
+static uint16_t g_bluetooth_tx_offset;
+static volatile uint16_t g_bluetooth_tx_remaining;
+
+static void ReceiveHostByte(USART_TypeDef *uart, HostSerial *host, uint32_t status)
+{
+  const uint8_t byte = (uint8_t)uart->DR;
+  const uint32_t index = host->write_index;
+  const uint32_t next = (index + 1U) % Q1_RX_CAPACITY;
+  if (next != host->read_index) {
+    const uint32_t errors = USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE;
+    host->rx[index] = ((status & USART_SR_RXNE) != 0U && (status & errors) == 0U) ?
+        byte : 0U;
+    __DMB();
+    host->write_index = next;
+  }
+}
+
+static void SendBluetoothLine(const char *line, uint16_t length)
+{
+  memcpy(g_bluetooth_tx, line, length);
+  g_bluetooth_tx_offset = 0U;
+  g_bluetooth_tx_remaining = length;
+  __DMB();
+  __HAL_UART_ENABLE_IT(&huart6, UART_IT_TXE);
+}
 #endif
 
 void USART1_IRQHandler(void)
 {
   const uint32_t status = USART1->SR;
-  const uint8_t byte = (uint8_t)USART1->DR;
 #if !APP_LASER_CAL_CAPTURE_ENABLED
-  const uint32_t next = (g_vcom_write + 1U) % Q1_RX_CAPACITY;
-  if ((status & USART_SR_RXNE) != 0U &&
-      (status & (USART_SR_ORE | USART_SR_FE | USART_SR_NE)) == 0U &&
-      next != g_vcom_read) {
-    g_vcom_rx[g_vcom_write] = byte;
-    __DMB();
-    g_vcom_write = next;
-  }
+  ReceiveHostByte(USART1, &g_vcom, status);
 #else
   (void)status;
-  (void)byte;
+  (void)USART1->DR;
+#endif
+}
+
+void USART6_IRQHandler(void)
+{
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+  const uint32_t status = USART6->SR;
+  if ((status & (USART_SR_RXNE | USART_SR_ORE)) != 0U) {
+    ReceiveHostByte(USART6, &g_bluetooth, status);
+  }
+  if ((status & USART_SR_TXE) != 0U && (USART6->CR1 & USART_CR1_TXEIE) != 0U) {
+    USART6->DR = (uint8_t)g_bluetooth_tx[g_bluetooth_tx_offset++];
+    if (--g_bluetooth_tx_remaining == 0U) {
+      __HAL_UART_DISABLE_IT(&huart6, UART_IT_TXE);
+    }
+  }
 #endif
 }
 /* Non-halting SWD mailbox. Zero on reset. Consumed once; no automatic start. */
@@ -280,26 +322,24 @@ static void TrajectoryTask(void *argument)
   }
 }
 #else
-static bool ReadVcomRequest(Q1Vcom_Request *request)
+static bool ReadHostRequest(HostSerial *host, Q1Vcom_Request *request)
 {
-  static char line[Q1_VCOM_LINE_SIZE];
-  static size_t length;
-  static bool overflow;
-  for (unsigned i = 0U; i < Q1_RX_CAPACITY && g_vcom_read != g_vcom_write; ++i) {
-    const uint32_t index = g_vcom_read;
-    const uint8_t byte = g_vcom_rx[index];
-    g_vcom_read = (index + 1U) % Q1_RX_CAPACITY;
+  for (unsigned i = 0U; i < Q1_RX_CAPACITY && host->read_index != host->write_index; ++i) {
+    const uint32_t index = host->read_index;
+    const uint8_t byte = host->rx[index];
+    host->read_index = (index + 1U) % Q1_RX_CAPACITY;
     if (byte == '\n') {
-      if (length > 0U && line[length - 1U] == '\r') --length;
-      line[length] = '\0';
-      length = 0U;
-      const bool valid = !overflow && Q1Vcom_Parse(line, request);
-      overflow = false;
+      size_t length = host->line_length;
+      if (length > 0U && host->line[length - 1U] == '\r') --length;
+      host->line[length] = '\0';
+      host->line_length = 0U;
+      const bool valid = !host->line_overflow && Q1Vcom_Parse(host->line, request);
+      host->line_overflow = false;
       if (valid) return true;
-    } else if (length + 1U < sizeof(line) && byte != 0U) {
-      line[length++] = (char)byte;
+    } else if (host->line_length + 1U < sizeof(host->line) && byte != 0U) {
+      host->line[host->line_length++] = (char)byte;
     } else {
-      overflow = true;
+      host->line_overflow = true;
     }
   }
   return false;
@@ -314,6 +354,7 @@ static void TrajectoryTask(void *argument)
   uint32_t last_sample_ms = 0U;
   uint32_t last_remote = 0U;
   uint32_t vcom_trial_id = 0U;
+  HostSerial *next_host = &g_vcom;
 
   for (;;) {
     taskENTER_CRITICAL();
@@ -369,7 +410,13 @@ static void TrajectoryTask(void *argument)
       last_remote = 0U;
     }
     Q1Vcom_Reply reply = {0};
-    if (ReadVcomRequest(&reply.request)) {
+    HostSerial *host = next_host;
+    HostSerial *other_host = (host == &g_vcom) ? &g_bluetooth : &g_vcom;
+    if (!ReadHostRequest(host, &reply.request)) {
+      host = ReadHostRequest(other_host, &reply.request) ? other_host : NULL;
+    }
+    if (host != NULL) {
+      next_host = (host == &g_vcom) ? &g_bluetooth : &g_vcom;
       switch (reply.request.action) {
         case Q1_VCOM_INFO:
           break;
@@ -414,7 +461,10 @@ static void TrajectoryTask(void *argument)
           }
           break;
       }
-      (void)xQueueSend(g_vcom_reply_queue, &reply, 0U);
+      if (host == &g_bluetooth) {
+        reply.telemetry_period_ms = APP_BLUETOOTH_TELEMETRY_PERIOD_MS;
+      }
+      (void)xQueueSend(host->replies, &reply, 0U);
     }
     if (swing.state == Q1_SWING_RUNNING) {
       if (g_motor_fault_reason != 0U) {
@@ -638,12 +688,25 @@ static void TelemetryTask(void *argument)
       "q1_amplitude_blend_permille,q1_vcom_trial_id,q1_center_cdeg,q1_center_output_milli\r\n";
   PendulumTelemetry data;
   char line[768];
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+  bool sent_bluetooth_telemetry = false;
+  uint32_t last_bluetooth_ms = 0U;
+  uint32_t last_bluetooth_trial = 0U;
+  uint8_t last_bluetooth_state = 0U;
+#endif
 
   (void)HAL_UART_Transmit(&huart1, (uint8_t *)header, sizeof(header) - 1U, 250U);
   for (;;) {
 #if !APP_LASER_CAL_CAPTURE_ENABLED
     Q1Vcom_Reply reply;
-    if (xQueueReceive(g_vcom_reply_queue, &reply, 0U) == pdPASS) {
+    if (g_bluetooth_tx_remaining == 0U &&
+        xQueueReceive(g_bluetooth.replies, &reply, 0U) == pdPASS) {
+      const int length = Q1Vcom_FormatReply(line, sizeof(line), &reply);
+      if (length > 0) {
+        SendBluetoothLine(line, (uint16_t)length);
+      }
+    }
+    if (xQueueReceive(g_vcom.replies, &reply, 0U) == pdPASS) {
       const int length = Q1Vcom_FormatReply(line, sizeof(line), &reply);
       if (length > 0) {
         (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 50U);
@@ -712,6 +775,20 @@ static void TelemetryTask(void *argument)
         (long)(data.q1_center_output * 1000.0F));
     if (length > 0 && (size_t)length < sizeof(line)) {
       (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 50U);
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+      const uint32_t now = HAL_GetTick();
+      if (g_bluetooth_tx_remaining == 0U &&
+          uxQueueMessagesWaiting(g_bluetooth.replies) == 0U &&
+          (!sent_bluetooth_telemetry || data.q1_state != last_bluetooth_state ||
+           data.q1_vcom_trial_id != last_bluetooth_trial ||
+           now - last_bluetooth_ms >= APP_BLUETOOTH_TELEMETRY_PERIOD_MS)) {
+        SendBluetoothLine(line, (uint16_t)length);
+        sent_bluetooth_telemetry = true;
+        last_bluetooth_ms = now;
+        last_bluetooth_trial = data.q1_vcom_trial_id;
+        last_bluetooth_state = data.q1_state;
+      }
+#endif
     }
   }
 }
@@ -729,11 +806,16 @@ void PendulumApp_CreateTasks(void)
   configASSERT(g_telemetry_queue != NULL);
   configASSERT(g_display_queue != NULL);
 #if !APP_LASER_CAL_CAPTURE_ENABLED
-  g_vcom_reply_queue = xQueueCreate(4U, sizeof(Q1Vcom_Reply));
-  configASSERT(g_vcom_reply_queue != NULL);
+  g_vcom.replies = xQueueCreate(4U, sizeof(Q1Vcom_Reply));
+  g_bluetooth.replies = xQueueCreate(4U, sizeof(Q1Vcom_Reply));
+  configASSERT(g_vcom.replies != NULL);
+  configASSERT(g_bluetooth.replies != NULL);
   HAL_NVIC_SetPriority(USART1_IRQn, 6U, 0U);
   HAL_NVIC_EnableIRQ(USART1_IRQn);
   __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
+  HAL_NVIC_SetPriority(USART6_IRQn, 6U, 0U);
+  HAL_NVIC_EnableIRQ(USART6_IRQn);
+  __HAL_UART_ENABLE_IT(&huart6, UART_IT_RXNE);
 #endif
 
   configASSERT(xTaskCreate(ImuTask, "imu", 512U, NULL, 5U, NULL) == pdPASS);

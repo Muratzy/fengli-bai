@@ -11,6 +11,7 @@ SPI_HandleTypeDef hspi2;
 TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart6;
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -20,6 +21,9 @@ static void MX_SPI2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+#if !APP_MOTOR1_TEST_ENABLED && !APP_LASER_CAL_CAPTURE_ENABLED
+static void MX_USART6_UART_Init(void);
+#endif
 
 int main(void)
 {
@@ -48,6 +52,9 @@ int main(void)
 #if APP_MOTOR1_TEST_ENABLED
   Motor1Test_CreateTasks();
 #else
+#if !APP_LASER_CAL_CAPTURE_ENABLED
+  MX_USART6_UART_Init();
+#endif
   PendulumApp_CreateTasks();
 #endif
   vTaskStartScheduler();
@@ -222,6 +229,18 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
 }
+
+#if !APP_MOTOR1_TEST_ENABLED && !APP_LASER_CAL_CAPTURE_ENABLED
+static void MX_USART6_UART_Init(void)
+{
+  huart6.Instance = USART6;
+  huart6.Init = huart1.Init;
+  huart6.Init.BaudRate = APP_BLUETOOTH_UART_BAUD;
+  if (HAL_UART_Init(&huart6) != HAL_OK) {
+    Error_Handler();
+  }
+}
+#endif
 
 static void MX_GPIO_Init(void)
 {

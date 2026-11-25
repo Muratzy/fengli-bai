@@ -92,5 +92,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
     gpio.Pin = GPIO_PIN_5 | GPIO_PIN_6;
     gpio.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(GPIOD, &gpio);
+  } else if (huart->Instance == USART6) {
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_USART6_CLK_ENABLE();
+    gpio.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+    gpio.Alternate = GPIO_AF8_USART6;
+    HAL_GPIO_Init(GPIOC, &gpio);
   }
 }

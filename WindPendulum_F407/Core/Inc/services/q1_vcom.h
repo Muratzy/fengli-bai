@@ -15,6 +15,7 @@ typedef struct {
 typedef struct {
   Q1Vcom_Request request;
   const char *error;
+  uint32_t telemetry_period_ms;
 } Q1Vcom_Reply;
 
 #define Q1_VCOM_LINE_SIZE 256U
