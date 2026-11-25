@@ -63,6 +63,7 @@ void Q1Swing_Stop(Q1Swing *swing, Q1Swing_Reason reason)
   swing->state = (reason == Q1_SWING_TIME_UP) ? Q1_SWING_FINISHED :
       (reason == Q1_SWING_USER_STOP) ? Q1_SWING_STOPPED : Q1_SWING_FAULT;
   swing->pitch_integrating = false;
+  swing->center_output = 0.0F;
   memset(swing->pwm, 0, sizeof(swing->pwm));
   memset(&swing->control_output, 0, sizeof(swing->control_output));
   PendulumControl_Reset(&swing->controller, 0.0F, 0.0F);
@@ -161,6 +162,43 @@ static void Q1Swing_UpdateTurnMonitor(Q1Swing *swing, float pitch_deg)
   if (pitch_deg > swing->right_peak_deg) swing->right_peak_deg = pitch_deg;
   if (-pitch_deg > swing->left_peak_deg) swing->left_peak_deg = -pitch_deg;
   swing->peak_deg = fmaxf(swing->right_peak_deg, swing->left_peak_deg);
+}
+
+static void Q1Swing_UpdateCenter(Q1Swing *swing, float pitch_deg,
+                                 float pitch_rate_dps, float dt_s)
+{
+  const int8_t direction = pitch_rate_dps >= APP_Q1_CENTER_TURN_RATE_DPS ? 1 :
+      pitch_rate_dps <= -APP_Q1_CENTER_TURN_RATE_DPS ? -1 : 0;
+  const uint32_t period_ms = swing->reference.config.swing_period_ms;
+  const uint32_t since_turn_ms = swing->run_ms - swing->last_turn_ms;
+
+  if (swing->leg_direction == 0) {
+    swing->leg_direction = direction;
+    swing->leg_peak_deg = pitch_deg;
+  } else if (direction != 0 && direction != swing->leg_direction) {
+    const float endpoint = swing->leg_peak_deg;
+    if (swing->have_previous_turn && since_turn_ms >= period_ms / 4U &&
+        since_turn_ms <= period_ms &&
+        (endpoint - swing->previous_turn_deg) * (float)swing->leg_direction >=
+            0.5F * swing->target_amplitude_deg) {
+      swing->center_target_deg = 0.5F * (endpoint + swing->previous_turn_deg);
+      swing->last_center_update_ms = swing->run_ms;
+    }
+    swing->have_previous_turn = true;
+    swing->previous_turn_deg = endpoint;
+    swing->last_turn_ms = swing->run_ms;
+    swing->leg_direction = direction;
+    swing->leg_peak_deg = pitch_deg;
+  } else {
+    swing->leg_peak_deg = swing->leg_direction > 0 ?
+        fmaxf(swing->leg_peak_deg, pitch_deg) :
+        fminf(swing->leg_peak_deg, pitch_deg);
+  }
+
+  const float center_target = swing->run_ms - swing->last_center_update_ms <= period_ms ?
+      swing->center_target_deg : 0.0F;
+  swing->center_estimate_deg += dt_s / (APP_Q1_CENTER_FILTER_S + dt_s) *
+      (center_target - swing->center_estimate_deg);
 }
 
 static void Q1Swing_UpdateAmplitudeEstimate(Q1Swing *swing, float pitch_deg)
@@ -301,15 +339,18 @@ void Q1Swing_Step(Q1Swing *swing, uint32_t now_ms, float roll_deg,
   Q1Swing_UpdateAmplitudeEstimate(swing, pitch_deg);
   Q1Swing_UpdateAmplitudePhase(swing, now_ms);
   if (swing->amplitude_mode_enabled) {
+    Q1Swing_UpdateCenter(swing, pitch_deg, pitch_rate_dps, input.dt_s);
     PID_Controller *amplitude = &swing->amplitude_pid;
     const float filtered_rate = -swing->controller.axis_pid[PENDULUM_AXIS_PITCH].derivative;
     const float amp_rate = (swing->amplitude_estimate_deg -
         amplitude->previous_measurement) / input.dt_s;
     const float previous_gain = amplitude->output + swing->tuning.damping_compensation;
+    const float previous_demand = previous_gain * filtered_rate + swing->center_output;
     const bool integrate = swing->amplitude_blend_permille > 0U &&
         swing->tuning.amplitude_ki > 0.0F &&
-        (fabsf(previous_gain * filtered_rate) < (float)APP_Q1_PWM_MAX_PERMILLE ||
-         previous_gain * swing->amplitude_error_deg <= 0.0F);
+        (fabsf(previous_demand) < (float)APP_Q1_PWM_MAX_PERMILLE ||
+         (previous_demand > 0.0F ? 1.0F : -1.0F) *
+             filtered_rate * swing->amplitude_error_deg <= 0.0F);
     const float gain = PID_UpdateWithRate(amplitude, swing->target_amplitude_deg,
         swing->amplitude_estimate_deg, 0.0F, amp_rate, input.dt_s, integrate);
     swing->amplitude_feedback_output = gain * filtered_rate;
@@ -321,7 +362,17 @@ void Q1Swing_Step(Q1Swing *swing, uint32_t now_ms, float roll_deg,
     const float energy_output = Q1Swing_Clamp(
         swing->amplitude_feedback_output + swing->amplitude_compensation_output,
         -(float)APP_Q1_PWM_MAX_PERMILLE, (float)APP_Q1_PWM_MAX_PERMILLE);
-    const float blended_output = pid_output + blend * (energy_output - pid_output);
+    const float base_output = pid_output + blend * (energy_output - pid_output);
+    const float center_limit = (float)APP_Q1_CENTER_LIMIT_PERMILLE;
+    const float center = -APP_Q1_CENTER_KP * swing->center_estimate_deg;
+    swing->center_output = blend * Q1Swing_Clamp(center, -center_limit, center_limit);
+    if (base_output * swing->center_output > 0.0F) {
+      /* Reserve half the remaining duty and allow for PWM rounding. */
+      const float headroom = 0.5F * fmaxf(0.0F,
+          (float)APP_Q1_PWM_MAX_PERMILLE - 1.0F - fabsf(base_output));
+      swing->center_output = Q1Swing_Clamp(swing->center_output, -headroom, headroom);
+    }
+    const float blended_output = base_output + swing->center_output;
     swing->control_output.p[PENDULUM_AXIS_PITCH] = pid_p * (1.0F - blend) +
         amplitude->p_term * filtered_rate * blend;
     swing->control_output.i[PENDULUM_AXIS_PITCH] =

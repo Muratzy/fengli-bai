@@ -77,6 +77,15 @@ typedef struct {
   float target_pitch_rate_dps;
   float target_position_m;
   float target_velocity_mps;
+  int8_t leg_direction;
+  bool have_previous_turn;
+  uint32_t last_turn_ms;
+  uint32_t last_center_update_ms;
+  float leg_peak_deg;
+  float previous_turn_deg;
+  float center_target_deg;
+  float center_estimate_deg;
+  float center_output;
   uint16_t pwm[4];
 } Q1Swing;
 

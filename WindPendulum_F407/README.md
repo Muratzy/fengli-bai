@@ -42,7 +42,7 @@ IMU 任务以 500 Hz 为目标轮询数据。2026-11-23 按用户要求取消上
 
 ## FreeRTOS 与输出限制
 
-任务链为 `imu -> fusion -> trajectory -> motor -> telemetry`，UI 通过队列读取状态。[Q1 网页上位机](上位机/README.md) 支持通过 J-Link VCOM 连续调参、启停、看实时曲线和保存试次。Q1/Q2 使用 `Tools/q1_trial.py` 采集，板端新版输出 68 列 CSV，包含 PWM 上限及网页试次 ID。每次试验自动保存控制曲线与分析指标。Q2 专用数据目录为 `数据记录/串口/Q2/`。Python 工具的串口路径只接收遥测，启停走 J-Link RAM 命令。字段及流程见 [电脑串口采集](电脑串口采集.md)。
+任务链为 `imu -> fusion -> trajectory -> motor -> telemetry`，UI 通过队列读取状态。[Q1 网页上位机](上位机/README.md) 支持通过 J-Link VCOM 连续调参、启停、看实时曲线和保存试次。Q1/Q2 使用 `Tools/q1_trial.py` 采集，板端新版输出 70 列 CSV，包含 PWM 上限、网页试次 ID、中心估计和居中修正。每次试验自动保存控制曲线与分析指标。Q2 专用数据目录为 `数据记录/串口/Q2/`。Python 工具的串口路径只接收遥测，启停走 J-Link RAM 命令。字段及流程见 [电脑串口采集](电脑串口采集.md)。
 
 统一任务 API 为 `PendulumApp_RequestProblemStart(id,&params)`、`PendulumApp_RequestProblemStop()`、`PendulumApp_GetProblemStatus(&status)`。题目注册和参数用法见 [项目逻辑框架](项目逻辑框架.md) 第 2.3 节。Q1 两阶段实验先用 28/0/7 实测角速度阻尼 PD 起摆，幅值估计达到目标的 90% 并保持 250 ms 后，以 1642 ms 平滑混合进入幅值反馈，首轮 `Ka=2.0`、`K_comp=0.5`；Q2 的 D 项取目标与实测角速度之差的低通滤波值乘以 `Kd`。Q1 实验窗口为 25 s，Q2 增益为 32.75/0/8。两问 D 滤波时间常数为 50 ms。控制随新的有效融合数据更新，名义间隔 2 ms。停止与故障立即归零，Roll 轴闭环禁用。
 
@@ -54,7 +54,7 @@ IMU 任务以 500 Hz 为目标轮询数据。2026-11-23 按用户要求取消上
 
 使用 `python -B -X utf8 Tools/q1_trial.py --problem q2 --length-cm 50 --action observe --duration 2` 核对待机。获准启动后改用 `--action start --duration 20`，脚本核对姿态在 ±7° 内、数据有效、PWM 与 EN 为零后配置 500 mm 并启动一次。停止用 `--action stop --duration 2` 或 KEY3。
 
-题目采集器兼容 47、58、59、67 和 68 列会话。遇到板端重启或启动后超过 0.5 秒无有效遥测时，采集器中止并尝试停止。最新参数、烧录与实测证据见根目录 [项目交接](../项目交接.md)。
+题目采集器兼容 47、58、59、67、68 和 70 列会话。遇到板端重启或启动后超过 0.5 秒无有效遥测时，采集器中止并尝试停止。最新参数、烧录与实测证据见根目录 [项目交接](../项目交接.md)。
 
 电机1测试为独立的执行器入口，只有测试任务可以输出 CH1，正常题目链路的门控仍保留。PD7 改为开漏并启用内部上拉，以便电机板 LM393/2N7002 下拉 EN 时不会与 MCU 推挽高电平冲突；5 V SN74HC08 对 3.3 V 输入的兼容性仍需实测。
 

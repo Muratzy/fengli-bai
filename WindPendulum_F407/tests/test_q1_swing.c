@@ -195,6 +195,34 @@ static void TestTunedTrialUsesRamParameters(void)
   assert(swing.target_amplitude_deg > 16.8F);
 }
 
+static void TestCenterCorrection(float offset_deg)
+{
+  Q1Swing swing = {0};
+  assert(Q1Swing_Start(&swing, 0U, 0.0F, offset_deg, 0.0F));
+  const float angular_rate = 6.2831853F * 1000.0F / APP_Q1_PERIOD_MS;
+  for (uint32_t now = 2U; now <= 8500U; now += 2U) {
+    const float phase = angular_rate * (float)now * 0.001F;
+    Q1Swing_Step(&swing, now, 0.0F, offset_deg + 17.0F * sinf(phase),
+                 17.0F * angular_rate * cosf(phase), true, false);
+    CheckDirectOutput(&swing);
+    if (swing.control_phase == Q1_SWING_CONTROL_PID) {
+      assert(swing.center_output == 0.0F);
+    }
+  }
+  assert(swing.control_phase == Q1_SWING_CONTROL_AMPLITUDE);
+  assert(fabsf(swing.center_estimate_deg - offset_deg) < 0.15F);
+  assert(swing.center_output * offset_deg < 0.0F);
+  assert(fabsf(swing.center_output) <= APP_Q1_CENTER_LIMIT_PERMILLE);
+
+  for (uint32_t now = 8502U; now <= 12500U; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, offset_deg, 0.0F, true, false);
+  }
+  assert(fabsf(swing.center_output) < 1.0F);
+  Q1Swing_Step(&swing, 12502U, 0.0F, offset_deg, 0.0F, true, true);
+  assert(swing.center_output == 0.0F);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
+}
+
 int main(void)
 {
   TestReferenceAndPidPath();
@@ -203,6 +231,8 @@ int main(void)
   TestDutyLimitAndDirectionChange();
   TestTwoPhaseAmplitudeControl();
   TestTunedTrialUsesRamParameters();
+  TestCenterCorrection(5.0F);
+  TestCenterCorrection(-5.0F);
   puts("Q1 trajectory PID tests passed");
   return 0;
 }

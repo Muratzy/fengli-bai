@@ -9,7 +9,8 @@ export const fields = (
   "roll_rate_cdeg_s,target_pitch_rate_cdeg_s,filtered_pitch_rate_error_cdeg_s,pitch_integrating,pitch_kp_milli," +
   "pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms,pwm_limit_permille,q1_control_phase," +
   "q1_amplitude_cdeg,q1_amplitude_target_cdeg,q1_amplitude_error_cdeg,q1_amplitude_output_milli," +
-  "q1_amplitude_ka_milli,q1_amplitude_kcomp_milli,q1_amplitude_blend_permille,q1_vcom_trial_id"
+  "q1_amplitude_ka_milli,q1_amplitude_kcomp_milli,q1_amplitude_blend_permille,q1_vcom_trial_id," +
+  "q1_center_cdeg,q1_center_output_milli"
 ).split(",");
 
 const indices = Object.fromEntries(fields.map((name, index) => [name, index]));
@@ -32,6 +33,10 @@ export const snapshotFields = [
   ["mode", "控制模式（1 为两阶段）", 1], ["startupILimit", "启动 PID 积分限值", 1000],
   ["telemetryMs", "遥测发送间隔 (ms)", 1],
   ["releasePercent", "幅值切换复位阈值 (%)", 10],
+  ["centerKp", "居中反馈增益 (‰/°)", 1000],
+  ["centerLimitPercent", "居中反馈上限 (%)", 10],
+  ["centerFilterMs", "中心估计滤波 (ms)", 1],
+  ["centerTurnRate", "端点换向速度阈值 (°/s)", 1000],
 ];
 
 const actions = ["INFO", "START", "STOP", "RESET"];
@@ -62,16 +67,16 @@ export function parseReply(line) {
   if (status !== "OK") return null;
   let snapshot;
   if (action === "INFO" || action === "START") {
-    if (params.length !== snapshotFields.length ||
+    if (![28, snapshotFields.length].includes(params.length) ||
         params.some(value => !/^\d+$/.test(value) || Number(value) > 0xffffffff)) return null;
-    snapshot = Object.fromEntries(snapshotFields.map(([key, , scale], i) => [key, Number(params[i]) / scale]));
+    snapshot = Object.fromEntries(snapshotFields.slice(0, params.length).map(([key, , scale], i) => [key, Number(params[i]) / scale]));
   } else if (params.length) return null;
   return { id: Number(id), action, snapshot };
 }
 
 export function parseTelemetry(line) {
   const values = line.split(",");
-  if (![59, 67, fields.length].includes(values.length) || values.some(value => !/^-?\d{1,10}$/.test(value))) return null;
+  if (![59, 67, 68, fields.length].includes(values.length) || values.some(value => !/^-?\d{1,10}$/.test(value))) return null;
   const data = values.map(Number);
   const get = name => data[indices[name]];
   const time = get("time_ms");

@@ -79,6 +79,10 @@
 #define APP_Q1_AMPLITUDE_D_FILTER_S       0.10F
 #define APP_Q1_AMPLITUDE_I_LIMIT         10.0F
 #define APP_Q1_AMPLITUDE_GAIN_LIMIT     100.0F
+#define APP_Q1_CENTER_KP                 10.0F
+#define APP_Q1_CENTER_LIMIT_PERMILLE     80U
+#define APP_Q1_CENTER_FILTER_S            0.50F
+#define APP_Q1_CENTER_TURN_RATE_DPS        5.0F
 #define APP_Q1_STOP_RATE_DPS           150.0F
 
 /* Q2 trajectory PID, current bench candidate in PWM permille / degrees.

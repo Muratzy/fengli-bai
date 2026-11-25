@@ -43,9 +43,10 @@ AMPLITUDE_HEADER = PWM_HEADER + ['q1_control_phase', 'q1_amplitude_cdeg',
                        'q1_amplitude_target_cdeg', 'q1_amplitude_error_cdeg',
                        'q1_amplitude_output_milli', 'q1_amplitude_ka_milli',
                        'q1_amplitude_kcomp_milli', 'q1_amplitude_blend_permille']
-HEADER = AMPLITUDE_HEADER + ['q1_vcom_trial_id']
+VCOM_HEADER = AMPLITUDE_HEADER + ['q1_vcom_trial_id']
+HEADER = VCOM_HEADER + ['q1_center_cdeg', 'q1_center_output_milli']
 HEADERS_BY_COUNT = {len(fields): fields for fields in
-                    (LEGACY_HEADER, PID_HEADER, PWM_HEADER, AMPLITUDE_HEADER, HEADER)}
+                    (LEGACY_HEADER, PID_HEADER, PWM_HEADER, AMPLITUDE_HEADER, VCOM_HEADER, HEADER)}
 Q2_EXTRA_FIELDS = ['host_rx_time', 'host_elapsed_s', 'requested_length_cm',
     'roll_deg', 'pitch_deg', 'target_roll_deg', 'target_pitch_deg',
     'roll_rate_dps', 'pitch_rate_dps', 'target_pitch_rate_dps',
@@ -62,7 +63,7 @@ def parse_line(line):
     if values == names:
         return None
     if names is None:
-        raise ValueError('Trial protocol requires 47, 58, 59, 67, or 68 fields')
+        raise ValueError('Trial protocol requires 47, 58, 59, 67, 68, or 70 fields')
     row = dict.fromkeys(HEADER, 0)
     row.update(zip(names, map(int, values)))
     if names is LEGACY_HEADER:

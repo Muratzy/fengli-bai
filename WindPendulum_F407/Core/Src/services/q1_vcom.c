@@ -104,7 +104,7 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
         tuning.target_amplitude_deg : ProblemQ1_TargetAmplitudeDeg(&config);
     length = snprintf(line, size,
         "!WP1,%lu,OK,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
-        "%lu,%lu,%lu,%u,%lu,%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%lu,%u,%lu",
+        "%lu,%lu,%lu,%u,%lu,%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%lu,%u,%lu,%lu,%u,%lu,%lu",
         id, actions[action], Milli(tuning.startup_kp), Milli(tuning.startup_kd),
         Milli(tuning.amplitude_kp), Milli(tuning.amplitude_ki), Milli(tuning.amplitude_kd),
         Milli(tuning.damping_compensation), Milli(target),
@@ -117,7 +117,9 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
         Milli(APP_Q1_STOP_ROLL_DEG), Milli(APP_Q1_STOP_RATE_DPS),
         Milli(APP_Q1_AMPLITUDE_GAIN_LIMIT), Milli(config.ground_height_m),
         Milli(APP_Q1_PITCH_KI), APP_Q1_CONTROL_MODE, Milli(APP_Q1_INTEGRAL_LIMIT),
-        APP_Q1_TELEMETRY_PERIOD_MS, Milli(APP_Q1_AMPLITUDE_RELEASE_RATIO));
+        APP_Q1_TELEMETRY_PERIOD_MS, Milli(APP_Q1_AMPLITUDE_RELEASE_RATIO),
+        Milli(APP_Q1_CENTER_KP), APP_Q1_CENTER_LIMIT_PERMILLE,
+        Milli(APP_Q1_CENTER_FILTER_S), Milli(APP_Q1_CENTER_TURN_RATE_DPS));
   } else {
     length = snprintf(line, size, "!WP1,%lu,OK,%s", id, actions[action]);
   }

@@ -83,6 +83,8 @@ typedef struct {
   float q1_amplitude_ka;
   float q1_amplitude_kcomp;
   uint32_t q1_vcom_trial_id;
+  float q1_center_deg;
+  float q1_center_output;
   PendulumMode mode;
 } PendulumTelemetry;
 

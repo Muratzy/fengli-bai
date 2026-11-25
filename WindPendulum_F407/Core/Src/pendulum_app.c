@@ -520,6 +520,8 @@ static void TrajectoryTask(void *argument)
       command.q1_amplitude_ka = swing.tuning.amplitude_kp;
       command.q1_amplitude_kcomp = swing.tuning.damping_compensation;
       command.q1_vcom_trial_id = vcom_trial_id;
+      command.q1_center_deg = swing.center_estimate_deg;
+      command.q1_center_output = swing.center_output;
       memcpy(command.pid_p, swing.control_output.p, sizeof(command.pid_p));
       memcpy(command.pid_i, swing.control_output.i, sizeof(command.pid_i));
       memcpy(command.pid_d, swing.control_output.d, sizeof(command.pid_d));
@@ -687,7 +689,7 @@ static void TelemetryTask(void *argument)
       "pitch_ki_milli,pitch_kd_milli,reference_period_ms,reference_ramp_ms,pwm_limit_permille,"
       "q1_control_phase,q1_amplitude_cdeg,q1_amplitude_target_cdeg,q1_amplitude_error_cdeg,"
       "q1_amplitude_output_milli,q1_amplitude_ka_milli,q1_amplitude_kcomp_milli,"
-      "q1_amplitude_blend_permille,q1_vcom_trial_id\r\n";
+      "q1_amplitude_blend_permille,q1_vcom_trial_id,q1_center_cdeg,q1_center_output_milli\r\n";
   PendulumTelemetry data;
   char line[768];
 
@@ -712,7 +714,7 @@ static void TelemetryTask(void *argument)
         "%lu,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,"
         "%ld,%ld,%ld,%ld,%ld,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%ld,%ld,%u,"
         "%ld,%u,%u,%lu,%lu,%ld,%ld,%ld,%u,%u,%u,"
-        "%u,%lu,%ld,%ld,%ld,%u,%ld,%ld,%ld,%lu,%lu,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%u,%lu\r\n",
+        "%u,%lu,%ld,%ld,%ld,%u,%ld,%ld,%ld,%lu,%lu,%u,%u,%ld,%ld,%ld,%ld,%ld,%ld,%u,%lu,%ld,%ld\r\n",
         (unsigned long)data.timestamp_ms,
         data.imu.gyro_raw[0], data.imu.gyro_raw[1], data.imu.gyro_raw[2],
         data.imu.accel_raw[0], data.imu.accel_raw[1], data.imu.accel_raw[2],
@@ -760,7 +762,9 @@ static void TelemetryTask(void *argument)
         (long)(data.q1_amplitude_ka * 1000.0F),
         (long)(data.q1_amplitude_kcomp * 1000.0F),
         (unsigned)data.q1_amplitude_blend_permille,
-        (unsigned long)data.q1_vcom_trial_id);
+        (unsigned long)data.q1_vcom_trial_id,
+        (long)(data.q1_center_deg * 100.0F),
+        (long)(data.q1_center_output * 1000.0F));
     if (length > 0 && (size_t)length < sizeof(line)) {
       (void)HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)length, 50U);
     }
