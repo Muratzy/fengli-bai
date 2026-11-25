@@ -57,6 +57,7 @@ typedef struct {
   float q1_left_peak_deg;
   float q1_right_peak_deg;
   uint32_t q1_run_ms;
+  uint32_t q1_duration_ms;
   uint32_t q1_switches;
   uint8_t q1_state;
   uint8_t q1_reason;

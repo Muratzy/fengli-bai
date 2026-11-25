@@ -195,6 +195,34 @@ static void TestTunedTrialUsesRamParameters(void)
   assert(swing.target_amplitude_deg > 16.8F);
 }
 
+static void TestConfiguredRunDuration(void)
+{
+  Q1Swing swing = {0};
+  Q1Swing_Tuning tuning = Q1Swing_DefaultTuning();
+  tuning.duration_ms = APP_Q1_MIN_DURATION_MS;
+  assert(Q1Swing_StartTuned(&swing, &tuning, 0U, 0.0F, 0.0F, 0.0F));
+  assert(swing.reference.config.duration_ms == APP_Q1_MIN_DURATION_MS);
+
+  for (uint32_t now = 2U; now < APP_Q1_MIN_DURATION_MS; now += 2U) {
+    Q1Swing_Step(&swing, now, 0.0F, 0.0F, 0.0F, true, false);
+  }
+  assert(swing.state == Q1_SWING_RUNNING);
+  Q1Swing_Step(&swing, APP_Q1_MIN_DURATION_MS, 0.0F, 0.0F, 0.0F, true, false);
+  assert(swing.state == Q1_SWING_FINISHED);
+  assert(swing.reason == Q1_SWING_TIME_UP);
+  assert(swing.pwm[0] == 0U && swing.pwm[1] == 0U);
+
+  tuning.duration_ms = APP_Q1_MAX_DURATION_MS;
+  assert(Q1Swing_StartTuned(&swing, &tuning, 10000U, 0.0F, 0.0F, 0.0F));
+  assert(swing.reference.config.duration_ms == APP_Q1_MAX_DURATION_MS);
+  Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+
+  tuning.duration_ms = APP_Q1_MIN_DURATION_MS - 1U;
+  assert(!Q1Swing_StartTuned(&swing, &tuning, 20000U, 0.0F, 0.0F, 0.0F));
+  tuning.duration_ms = APP_Q1_MAX_DURATION_MS + 1U;
+  assert(!Q1Swing_StartTuned(&swing, &tuning, 20000U, 0.0F, 0.0F, 0.0F));
+}
+
 static void TestCenterCorrection(float offset_deg)
 {
   Q1Swing swing = {0};
@@ -231,6 +259,7 @@ int main(void)
   TestDutyLimitAndDirectionChange();
   TestTwoPhaseAmplitudeControl();
   TestTunedTrialUsesRamParameters();
+  TestConfiguredRunDuration();
   TestCenterCorrection(5.0F);
   TestCenterCorrection(-5.0F);
   puts("Q1 trajectory PID tests passed");

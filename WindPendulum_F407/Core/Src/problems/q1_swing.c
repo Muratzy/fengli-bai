@@ -35,6 +35,9 @@ static bool Q1Swing_TuningIsValid(const Q1Swing_Tuning *tuning)
       tuning->amplitude_kd >= 0.0F && tuning->amplitude_kd <= 2.0F &&
       tuning->damping_compensation >= 0.0F &&
       tuning->damping_compensation <= 5.0F &&
+      (tuning->duration_ms == 0U ||
+       (tuning->duration_ms >= APP_Q1_MIN_DURATION_MS &&
+        tuning->duration_ms <= APP_Q1_MAX_DURATION_MS)) &&
       (tuning->target_amplitude_deg == 0.0F ||
        (tuning->target_amplitude_deg >= 5.0F &&
         tuning->target_amplitude_deg <= 20.0F));
@@ -98,6 +101,7 @@ bool Q1Swing_StartTuned(Q1Swing *swing, const Q1Swing_Tuning *tuning,
 
   ProblemQ1_Config reference_config = ProblemQ1_DefaultConfig();
   reference_config.target_amplitude_deg = tuning->target_amplitude_deg;
+  if (tuning->duration_ms != 0U) reference_config.duration_ms = tuning->duration_ms;
   if (tuning->target_amplitude_deg > 0.0F) {
     reference_config.line_length_m = 2.0F * reference_config.ground_height_m *
         tanf(tuning->target_amplitude_deg * Q1_RAD_PER_DEG);

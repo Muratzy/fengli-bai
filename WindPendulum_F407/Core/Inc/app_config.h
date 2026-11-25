@@ -54,6 +54,8 @@
 /* Q1 baseline period from the last full-duration trial. */
 #define APP_Q1_PERIOD_MS              1642U
 #define APP_Q1_DURATION_MS           25000U
+#define APP_Q1_MIN_DURATION_MS        5000U
+#define APP_Q1_MAX_DURATION_MS       60000U
 #define APP_Q1_TURN_RATE_DPS             2.0F
 #define APP_Q1_STOP_PITCH_DEG           25.0F
 #define APP_Q1_STOP_ROLL_DEG             8.0F

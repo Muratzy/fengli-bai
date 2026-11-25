@@ -7,6 +7,7 @@ import { chart, measuredColor, referenceColor, secondaryColor } from "./charts.m
 const byId = id => document.getElementById(id);
 const form = byId("parameters");
 const targetSpan = form.elements.targetSpanCm;
+const durationInput = form.elements.durationSeconds;
 const gainKeys = tuningKeys.filter(key => key !== "targetDeg");
 const degreesPerRadian = 180 / Math.PI;
 const controls = Object.fromEntries(["connect", "start", "stop", "reset"].map(id => [id, byId(id)]));
@@ -60,6 +61,7 @@ function updateControls() {
   controls.stop.disabled = !(serial && boardConfig && !stopping);
   controls.reset.disabled = !(serial && boardConfig && idle && !starting && !active && !resetting && !stopping);
   for (const field of form.querySelectorAll("input")) field.disabled = Boolean(starting || active);
+  durationInput.disabled = Boolean(starting || active || (boardConfig && !boardConfig.maxDurationMs));
   const connected = byId("connection");
   connected.dataset.state = serial && fresh ? "ready" : "idle";
   connected.textContent = connecting ? "正在连接" : !serial ? "串口未连接" :
@@ -67,6 +69,17 @@ function updateControls() {
   byId("board-state").textContent = fresh
     ? (latest.mode <= 1 ? "IMU 未就绪" : states[latest.state]) : "—";
   byId("run-id").textContent = shownId ?? "—";
+}
+
+function updateDurationSetting() {
+  const min = (boardConfig?.minDurationMs ?? 5000) / 1000;
+  const max = (boardConfig?.maxDurationMs ?? 60000) / 1000;
+  durationInput.min = min;
+  durationInput.max = max;
+  if (boardConfig) durationInput.value = boardConfig.durationMs / 1000;
+  byId("duration-hint").textContent = boardConfig && !boardConfig.maxDurationMs
+    ? "当前固件使用固定时长"
+    : min + "–" + max + " 秒，由 STM32 到时自动停止";
 }
 
 function spanForAngle(angle) {
@@ -196,6 +209,7 @@ async function disconnect(message, isError = false) {
   const current = serial;
   serial = undefined;
   boardConfig = undefined;
+  updateDurationSetting();
   updateSpanLimits();
   updateTargetAngle();
   latest = undefined;
@@ -229,6 +243,7 @@ controls.connect.addEventListener("click", async () => {
       const reply = await current.request("INFO");
       if (serial !== current) return;
       boardConfig = reply.snapshot;
+      updateDurationSetting();
       for (const key of gainKeys) form.elements[key].value = boardConfig[key];
       updateSpanLimits();
       const defaultSpan = Number(spanForAngle(boardConfig.targetDeg).toFixed(2));
@@ -250,8 +265,9 @@ controls.connect.addEventListener("click", async () => {
 async function startTrial() {
   if (controls.start.disabled) return;
   if (!form.checkValidity()) {
-    if (byId("tuning").hidden) {
-      location.hash = "tuning";
+    const section = durationInput.validity.valid ? "tuning" : "experiment";
+    if (byId(section).hidden) {
+      location.hash = section;
       updateNavigation();
     }
     form.reportValidity();
@@ -259,6 +275,7 @@ async function startTrial() {
   }
   const tuning = Object.fromEntries(gainKeys.map(key => [key, form.elements[key].valueAsNumber]));
   tuning.targetDeg = targetAngle();
+  if (boardConfig.maxDurationMs) tuning.durationMs = Math.round(durationInput.valueAsNumber * 1000);
   const current = serial;
   const capture = { frames: [] };
   starting = capture;
@@ -267,6 +284,9 @@ async function startTrial() {
   let accepted;
   try {
     accepted = await current.request("START", tuning);
+    if (tuning.durationMs !== undefined && accepted.snapshot.durationMs !== tuning.durationMs) {
+      throw new Error("STM32 确认的运行时长与设定不一致");
+    }
     const record = {
       protocol: "WP1",
       commandId: accepted.id,
@@ -580,7 +600,15 @@ function drawLive() {
   byId("rate").textContent = row ? row.rate.toFixed(1) + " °/s" : "—";
   byId("amplitude").textContent = Number.isFinite(row?.amplitude) ? row.amplitude.toFixed(2) + " °" : "—";
   byId("pwm").textContent = row ? row.pwm1.toFixed(1) + " / " + row.pwm2.toFixed(1) + " %" : "—";
-  byId("elapsed").textContent = row ? (row.runTime / 1000).toFixed(2) + " s" : "—";
+  const displayedRecord = active ?? (shownId
+    ? [...history.values()].find(record => trialLabel(record.id) === shownId) : undefined);
+  const runtimeLimit = displayedRecord?.snapshot.durationMs;
+  const configuredSeconds = runtimeLimit === undefined ? undefined : runtimeLimit / 1000;
+  const durationLabel = configuredSeconds === undefined ? "" : Number.isInteger(configuredSeconds)
+    ? configuredSeconds.toFixed(0) : configuredSeconds.toFixed(1);
+  byId("elapsed").textContent = row
+    ? (row.runTime / 1000).toFixed(2) + (durationLabel ? " / " + durationLabel : "") + " s"
+    : "—";
   byId("phase").textContent = row?.state === 1 && row.problem === 1
     ? phases[row.phase] ?? "Q1" : row ? states[row.state] : "等待遥测";
 }

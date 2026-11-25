@@ -5,7 +5,6 @@
 #include <stddef.h>
 
 #define PROBLEM_Q1_MIN_LENGTH_M       0.50F
-#define PROBLEM_Q1_MAX_DURATION_MS    60000U
 #define PROBLEM_Q1_DEG_PER_RAD        57.2957795131F
 #define PROBLEM_Q1_PI                 3.1415926536F
 #define PROBLEM_Q1_TWO_PI             6.2831853072F
@@ -51,7 +50,7 @@ bool ProblemQ1_Validate(const ProblemQ1_Config *config)
       ((config->direction_sign != 1.0F) &&
        (config->direction_sign != -1.0F)) ||
       (config->duration_ms == 0U) ||
-      (config->duration_ms > PROBLEM_Q1_MAX_DURATION_MS) ||
+      (config->duration_ms > APP_Q1_MAX_DURATION_MS) ||
       (config->swing_period_ms == 0U) ||
       (config->swing_period_ms > config->duration_ms) ||
       (config->startup_ramp_ms == 0U) ||

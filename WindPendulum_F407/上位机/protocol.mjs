@@ -37,6 +37,8 @@ export const snapshotFields = [
   ["centerLimitPercent", "居中反馈上限 (%)", 10],
   ["centerFilterMs", "中心估计滤波 (ms)", 1],
   ["centerTurnRate", "端点换向速度阈值 (°/s)", 1000],
+  ["minDurationMs", "最短运行时长 (ms)", 1],
+  ["maxDurationMs", "最长运行时长 (ms)", 1],
 ];
 
 const actions = ["INFO", "START", "STOP", "RESET"];
@@ -53,6 +55,7 @@ function crc16(payload) {
 
 export function commandFrame(id, action, tuning) {
   const params = action === "START" ? tuningKeys.map(key => Math.round(tuning[key] * 1000)) : [];
+  if (action === "START" && tuning.durationMs !== undefined) params.push(tuning.durationMs);
   const payload = ["!WP1", id, action, ...params].join(",");
   return payload + "*" + crc16(payload) + "\n";
 }
@@ -67,7 +70,7 @@ export function parseReply(line) {
   if (status !== "OK") return null;
   let snapshot;
   if (action === "INFO" || action === "START") {
-    if (![28, snapshotFields.length].includes(params.length) ||
+    if (![28, 32, snapshotFields.length].includes(params.length) ||
         params.some(value => !/^\d+$/.test(value) || Number(value) > 0xffffffff)) return null;
     snapshot = Object.fromEntries(snapshotFields.slice(0, params.length).map(([key, , scale], i) => [key, Number(params[i]) / scale]));
   } else if (params.length) return null;

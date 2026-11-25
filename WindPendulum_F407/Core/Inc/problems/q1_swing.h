@@ -41,6 +41,7 @@ typedef struct {
   float amplitude_kd;
   float damping_compensation;
   float target_amplitude_deg;
+  uint32_t duration_ms; /* Zero selects the default window. */
 } Q1Swing_Tuning;
 
 typedef struct {

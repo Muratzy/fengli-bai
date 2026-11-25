@@ -48,7 +48,7 @@ bool Q1Vcom_Parse(char *line, Q1Vcom_Request *request)
   }
   if (Crc16(line) != received) return false;
 
-  char *fields[10];
+  char *fields[11];
   unsigned count = 0U;
   char *field = line;
   for (;;) {
@@ -67,7 +67,12 @@ bool Q1Vcom_Parse(char *line, Q1Vcom_Request *request)
   if (action >= sizeof(actions) / sizeof(actions[0])) return false;
   request->action = (Q1Vcom_Action)action;
   if (request->action != Q1_VCOM_START) return count == 3U;
-  if (count != 10U) return false;
+  if (count != 10U && count != 11U) return false;
+  uint32_t duration_ms = 0U;
+  if (count == 11U &&
+      (!ReadUnsigned(fields[10], UINT32_MAX, &duration_ms) || duration_ms == 0U)) {
+    return false;
+  }
 
   uint32_t values[7];
   for (unsigned i = 0U; i < 7U; ++i) {
@@ -80,7 +85,8 @@ bool Q1Vcom_Parse(char *line, Q1Vcom_Request *request)
       .amplitude_ki = (float)values[3] / 1000.0F,
       .amplitude_kd = (float)values[4] / 1000.0F,
       .damping_compensation = (float)values[5] / 1000.0F,
-      .target_amplitude_deg = (float)values[6] / 1000.0F};
+      .target_amplitude_deg = (float)values[6] / 1000.0F,
+      .duration_ms = duration_ms};
   return true;
 }
 
@@ -102,14 +108,15 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
         reply->request.tuning : Q1Swing_DefaultTuning();
     const float target = tuning.target_amplitude_deg > 0.0F ?
         tuning.target_amplitude_deg : ProblemQ1_TargetAmplitudeDeg(&config);
+    const uint32_t duration_ms = tuning.duration_ms ? tuning.duration_ms : config.duration_ms;
     length = snprintf(line, size,
         "!WP1,%lu,OK,%s,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
-        "%lu,%lu,%lu,%u,%lu,%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%lu,%u,%lu,%lu,%u,%lu,%lu",
+        "%lu,%lu,%lu,%u,%lu,%lu,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%lu,%u,%lu,%lu,%u,%lu,%lu,%u,%u",
         id, actions[action], Milli(tuning.startup_kp), Milli(tuning.startup_kd),
         Milli(tuning.amplitude_kp), Milli(tuning.amplitude_ki), Milli(tuning.amplitude_kd),
         Milli(tuning.damping_compensation), Milli(target),
         (unsigned long)config.swing_period_ms, (unsigned long)config.startup_ramp_ms,
-        (unsigned long)config.duration_ms, APP_Q1_PWM_MAX_PERMILLE,
+        (unsigned long)duration_ms, APP_Q1_PWM_MAX_PERMILLE,
         Milli(APP_Q1_RATE_FILTER_TAU_S), Milli(APP_Q1_AMPLITUDE_D_FILTER_S),
         APP_Q1_AMPLITUDE_HOLD_MS, APP_Q1_AMPLITUDE_BLEND_MS,
         Milli(APP_Q1_AMPLITUDE_SWITCH_RATIO), Milli(APP_Q1_AMPLITUDE_I_LIMIT),
@@ -119,7 +126,8 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
         Milli(APP_Q1_PITCH_KI), APP_Q1_CONTROL_MODE, Milli(APP_Q1_INTEGRAL_LIMIT),
         APP_Q1_TELEMETRY_PERIOD_MS, Milli(APP_Q1_AMPLITUDE_RELEASE_RATIO),
         Milli(APP_Q1_CENTER_KP), APP_Q1_CENTER_LIMIT_PERMILLE,
-        Milli(APP_Q1_CENTER_FILTER_S), Milli(APP_Q1_CENTER_TURN_RATE_DPS));
+        Milli(APP_Q1_CENTER_FILTER_S), Milli(APP_Q1_CENTER_TURN_RATE_DPS),
+        APP_Q1_MIN_DURATION_MS, APP_Q1_MAX_DURATION_MS);
   } else {
     length = snprintf(line, size, "!WP1,%lu,OK,%s", id, actions[action]);
   }

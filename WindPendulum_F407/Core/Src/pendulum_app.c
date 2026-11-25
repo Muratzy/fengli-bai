@@ -497,6 +497,7 @@ static void TrajectoryTask(void *argument)
       command.q1_left_peak_deg = swing.left_peak_deg;
       command.q1_right_peak_deg = swing.right_peak_deg;
       command.q1_run_ms = swing.run_ms;
+      command.q1_duration_ms = swing.reference.config.duration_ms;
       command.target_roll_deg = swing.target_roll_deg;
       command.target_pitch_deg = swing.target_pitch_deg;
       command.q1_target_position_m = swing.target_position_m;
@@ -604,7 +605,7 @@ static void MotorTask(void *argument)
     const uint16_t duty_limit = (command.mode == PENDULUM_MODE_Q2_LINE) ?
         APP_Q2_PWM_MAX_PERMILLE : APP_Q1_PWM_MAX_PERMILLE;
     const uint32_t run_limit_ms = (command.mode == PENDULUM_MODE_Q2_LINE) ?
-        APP_Q2_DURATION_MS : APP_Q1_DURATION_MS;
+        APP_Q2_DURATION_MS : command.q1_duration_ms;
     const bool valid_output = command.pwm_permille[2] == 0U &&
         command.pwm_permille[3] == 0U &&
         command.pwm_permille[0] <= duty_limit &&
