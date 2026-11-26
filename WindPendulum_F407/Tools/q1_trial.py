@@ -54,7 +54,8 @@ Q2_EXTRA_FIELDS = ['host_rx_time', 'host_elapsed_s', 'requested_length_cm',
     'pitch_p_permille', 'pitch_i_permille', 'pitch_d_permille', 'pitch_u_permille',
     'pwm1_percent', 'pwm2_percent']
 REASONS = ['none', 'time_up', 'user_stop', 'sample_stale', 'angle_limit',
-           'no_turn', 'en_low', 'not_centered', 'invalid_config']
+           'no_turn', 'en_low', 'not_centered', 'invalid_config',
+           'q4_settled', 'q4_no_release', 'q4_not_settled']
 
 
 def parse_line(line):

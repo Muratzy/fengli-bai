@@ -4,6 +4,7 @@
 #include "main.h"
 #include "pendulum_app.h"
 #include "app_config.h"
+#include "problems/q4_brake.h"
 #include "queue.h"
 #include "task.h"
 
@@ -357,6 +358,9 @@ void PendulumUI_Task(void *argument)
   const uint32_t max_length_cm = APP_Q2_MAX_LENGTH_MM / 10U;
   uint8_t previous_keys = 0U;
   uint8_t screen = 0U; /* 0=setup, 1=running, 2=result */
+  ProblemId selected = PROBLEM_Q2;
+  ProblemParams q3_params = ProblemApi_DefaultParams(PROBLEM_Q3);
+  bool switching = false;
 
   if (OLED_Init() != OLED_OK) {
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000U));
@@ -370,10 +374,10 @@ void PendulumUI_Task(void *argument)
     }
     ProblemStatus status;
     (void)PendulumApp_GetProblemStatus(&status);
-    if (status.id == PROBLEM_Q2) {
+    if (status.id == selected) {
       if (status.state == PROBLEM_STATUS_RUNNING) {
         screen = 1U;
-        length_cm = status.line_length_mm / 10U;
+        if (selected == PROBLEM_Q2) length_cm = status.line_length_mm / 10U;
       } else if (screen == 1U && status.state >= PROBLEM_STATUS_FINISHED &&
                  status.state <= PROBLEM_STATUS_FAULT) {
         screen = 2U;
@@ -387,7 +391,32 @@ void PendulumUI_Task(void *argument)
     const uint8_t pressed = keys & (uint8_t)~previous_keys;
     previous_keys = keys;
 
-    if (screen != 1U) {
+    if (switching) {
+      switching = keys != 0U;
+    } else if (screen != 1U && status.state != PROBLEM_STATUS_RUNNING &&
+               status.state != PROBLEM_STATUS_QUEUED &&
+               status.state != PROBLEM_STATUS_STOPPING && keys == 6U) {
+      selected = selected == PROBLEM_Q4 ? PROBLEM_Q2 : (ProblemId)(selected + 1);
+      screen = 0U;
+      switching = true;
+    } else if (screen != 1U && selected == PROBLEM_Q4) {
+      if ((pressed & 1U) != 0U &&
+          PendulumApp_RequestProblemStart(PROBLEM_Q4, NULL) == PROBLEM_REQUEST_ACCEPTED) {
+        screen = 1U;
+      }
+    } else if (screen != 1U && selected == PROBLEM_Q3) {
+      if ((pressed & 2U) != 0U) {
+        q3_params.direction_deg = (q3_params.direction_deg + APP_Q3_DIRECTION_STEP_DEG) % 360U;
+      }
+      if ((pressed & 4U) != 0U) {
+        q3_params.direction_deg = (q3_params.direction_deg + 360U -
+            APP_Q3_DIRECTION_STEP_DEG) % 360U;
+      }
+      if ((pressed & 1U) != 0U &&
+          PendulumApp_RequestProblemStart(PROBLEM_Q3, &q3_params) == PROBLEM_REQUEST_ACCEPTED) {
+        screen = 1U;
+      }
+    } else if (screen != 1U) {
       if ((pressed & 2U) != 0U && length_cm < max_length_cm)
         length_cm = (length_cm / 10U + 1U) * 10U;
       if ((pressed & 4U) != 0U && length_cm > min_length_cm)
@@ -395,19 +424,57 @@ void PendulumUI_Task(void *argument)
       if ((pressed & 1U) != 0U &&
           PendulumApp_RequestQ2Start(length_cm * 10U)) screen = 1U;
     } else if ((pressed & 4U) != 0U) {
-      (void)PendulumApp_RequestQ2Cancel();
+      (void)PendulumApp_RequestProblemStop();
     }
 
     OLED_Clear();
     OLED_SetFont(u8g2_font_5x7_tf);
-    OLED_DrawUTF8(2, 1, "Q2 VARIABLE LINE");
+    OLED_DrawUTF8(2, 1, selected == PROBLEM_Q4 ? "Q4 BRAKING" :
+        selected == PROBLEM_Q3 ? "Q3 DIRECTION LINE" : "Q2 VARIABLE LINE");
     OLED_DrawHLine(1, 11, 126U);
     char line[28];
-    if (screen == 0U) {
+    if (selected == PROBLEM_Q4) {
+      if (screen == 0U) {
+        OLED_DrawUTF8(2, 17, "PULL 30-45 DEG");
+        OLED_DrawUTF8(2, 32, APP_Q3_ROLL_SIGN == 0 ? "ROLL NOT CALIBRATED" : "KEY1 ARM");
+        OLED_DrawUTF8(2, 54, "KEY2+KEY3: Q2");
+      } else if (screen == 1U) {
+        const uint8_t phase = g_display_state.telemetry.q1_control_phase;
+        OLED_DrawUTF8(2, 17, phase == Q4_WAIT_RELEASE ? "HOLD THEN RELEASE" :
+            phase == Q4_BRAKING ? "BRAKING" : "VERIFY STOP");
+        (void)snprintf(line, sizeof(line), "%lu ms", (unsigned long)status.elapsed_ms);
+        OLED_DrawUTF8(2, 35, line);
+        OLED_DrawUTF8(2, 54, "KEY3 STOP");
+      } else {
+        OLED_DrawUTF8(2, 17, status.reason == Q4_BRAKE_SETTLED ? "SETTLED" :
+            status.reason == Q4_BRAKE_NO_RELEASE ? "NO RELEASE" :
+            status.reason == Q4_BRAKE_NOT_SETTLED ? "NOT SETTLED" :
+            status.reason == Q1_SWING_USER_STOP ? "STOPPED" : "FAULT");
+        (void)snprintf(line, sizeof(line), "%lu ms  R%lu", (unsigned long)status.elapsed_ms,
+            (unsigned long)status.reason);
+        OLED_DrawUTF8(2, 35, line);
+        OLED_DrawUTF8(2, 54, "KEY1 ARM");
+      }
+    } else if (selected == PROBLEM_Q3 && screen == 0U) {
+      (void)snprintf(line, sizeof(line), "%lu deg  %lu cm",
+          (unsigned long)q3_params.direction_deg, (unsigned long)(q3_params.line_length_mm / 10U));
+      OLED_DrawUTF8(2, 17, line);
+      OLED_DrawUTF8(2, 28, "KEY2 +10  KEY3 -10");
+      OLED_DrawUTF8(2, 39, APP_Q3_ROLL_SIGN == 0 ? "ROLL NOT CALIBRATED" : "KEY1 START");
+      OLED_DrawUTF8(2, 52, "KEY2+KEY3: Q4");
+    } else if (selected == PROBLEM_Q3 && screen == 1U) {
+      (void)snprintf(line, sizeof(line), "%lu deg  %lu cm",
+          (unsigned long)status.direction_deg, (unsigned long)(status.line_length_mm / 10U));
+      OLED_DrawUTF8(2, 18, line);
+      (void)snprintf(line, sizeof(line), "RUN %lu ms", (unsigned long)status.elapsed_ms);
+      OLED_DrawUTF8(2, 35, line);
+      OLED_DrawUTF8(2, 54, "KEY3 STOP");
+    } else if (screen == 0U) {
       (void)snprintf(line, sizeof(line), "LENGTH %lu cm", (unsigned long)length_cm);
       OLED_DrawUTF8(2, 20, line);
       OLED_DrawUTF8(2, 34, "KEY2 +  KEY3 -");
-      OLED_DrawUTF8(2, 48, "KEY1 START");
+      OLED_DrawUTF8(2, 45, "KEY1 START");
+      OLED_DrawUTF8(2, 55, "KEY2+KEY3: Q3");
     } else if (screen == 1U) {
       const float roll = g_display_state.telemetry.roll_deg * 0.01745329252F;
       const float pitch = g_display_state.telemetry.pitch_deg * 0.01745329252F;
@@ -424,14 +491,14 @@ void PendulumUI_Task(void *argument)
       OLED_DrawUTF8(2, 42, line);
       OLED_DrawUTF8(2, 54, "KEY3 STOP");
     } else {
-      const char *result = (g_display_state.telemetry.q1_state == PROBLEM_STATUS_FINISHED) ?
-          "TIME UP" : (g_display_state.telemetry.q1_state == PROBLEM_STATUS_STOPPED) ?
+      const char *result = (status.state == PROBLEM_STATUS_FINISHED) ?
+          "TIME UP" : (status.state == PROBLEM_STATUS_STOPPED) ?
           "STOPPED" : "FAULT";
       (void)snprintf(line, sizeof(line), "%s R%u", result,
-          (unsigned)g_display_state.telemetry.q1_reason);
+          (unsigned)status.reason);
       OLED_DrawUTF8(2, 22, line);
       OLED_DrawUTF8(2, 36, "KEY1 RESTART");
-      OLED_DrawUTF8(2, 50, "KEY2+/KEY3-");
+      OLED_DrawUTF8(2, 50, selected == PROBLEM_Q3 ? "KEY2+KEY3: Q4" : "KEY2+/KEY3-");
     }
     (void)OLED_Update();
     vTaskDelayUntil(&wake_time, pdMS_TO_TICKS(50U));

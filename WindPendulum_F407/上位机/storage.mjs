@@ -26,12 +26,12 @@ export function historyOperation(db, mode, operation, store = "trials") {
   });
 }
 export function trialCsv(record) {
-  const count = record.rows[0]?.split(",").length ?? fields.length;
+  const count = Math.min(record.rows[0]?.split(",").length ?? fields.length, fields.length);
   return [fields.slice(0, count).join(","), ...record.rows, ""].join("\r\n");
 }
 
 export function trialFilename(record) {
-  return "Q1-" + String(record.id).padStart(3, "0");
+  return "Q" + (record.problemId ?? 1) + "-" + String(record.id).padStart(3, "0");
 }
 
 async function writeFile(directory, name, content) {

@@ -3,7 +3,7 @@ export const referenceColor = "#877f72";
 export const secondaryColor = "#b55840";
 
 export function chart(canvas, series, {
-  start = 0, end = 12, min = -20, max = 20, positionPlot = false, zeroLine = false,
+  start = 0, end = 12, min = -20, max = 20, positionPlot = false, zeroLine = false, maxGap = 0.15,
 } = {}) {
   const horizontal = positionPlot ? "x" : "t";
   const width = canvas.clientWidth;
@@ -67,7 +67,7 @@ export function chart(canvas, series, {
     ctx.lineTo(left + plotWidth, y(0));
     ctx.stroke();
   }
-  for (const { points, value, color, dashed } of series) {
+  for (const { points, value, color, dashed, maxGap: seriesGap = maxGap } of series) {
     ctx.beginPath();
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.65;
@@ -80,7 +80,7 @@ export function chart(canvas, series, {
       }
       const col = x(point[horizontal]);
       const row = y(point[value]);
-      if (!Number.isFinite(previous) || point.t - previous > 0.15 || point.t < previous)
+      if (!Number.isFinite(previous) || point.t - previous > seriesGap || point.t < previous)
         ctx.moveTo(col, row);
       else ctx.lineTo(col, row);
       previous = point.t;

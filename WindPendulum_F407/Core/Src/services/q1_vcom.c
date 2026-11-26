@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *const actions[] = {"INFO", "START", "STOP", "RESET"};
+static const char *const actions[] = {"INFO", "START", "STOP", "RESET", "Q3INFO", "Q4INFO", "Q4ARM"};
 
 static uint16_t Crc16(const char *line)
 {
@@ -48,7 +48,7 @@ bool Q1Vcom_Parse(char *line, Q1Vcom_Request *request)
   }
   if (Crc16(line) != received) return false;
 
-  char *fields[11];
+  char *fields[14];
   unsigned count = 0U;
   char *field = line;
   for (;;) {
@@ -66,13 +66,26 @@ bool Q1Vcom_Parse(char *line, Q1Vcom_Request *request)
          strcmp(fields[2], actions[action]) != 0) ++action;
   if (action >= sizeof(actions) / sizeof(actions[0])) return false;
   request->action = (Q1Vcom_Action)action;
+  request->problem_id = PROBLEM_Q1;
+  if (request->action == Q1_VCOM_Q4INFO || request->action == Q1_VCOM_Q4ARM)
+    request->problem_id = PROBLEM_Q4;
   if (request->action != Q1_VCOM_START) return count == 3U;
-  if (count != 10U && count != 11U) return false;
+  if (count != 10U && count != 11U && count != 14U) return false;
   uint32_t duration_ms = 0U;
+  uint32_t problem_id = PROBLEM_Q1;
   if (count == 11U &&
       (!ReadUnsigned(fields[10], UINT32_MAX, &duration_ms) || duration_ms == 0U)) {
     return false;
   }
+  if (count == 14U &&
+      (!ReadUnsigned(fields[10], UINT32_MAX, &duration_ms) || duration_ms == 0U ||
+       !ReadUnsigned(fields[11], PROBLEM_Q7, &problem_id) ||
+       problem_id != PROBLEM_Q3 ||
+       !ReadUnsigned(fields[12], 359U, &request->direction_deg) ||
+       !ReadUnsigned(fields[13], APP_Q3_MAX_LENGTH_MM, &request->line_length_mm))) {
+    return false;
+  }
+  request->problem_id = (ProblemId)problem_id;
 
   uint32_t values[7];
   for (unsigned i = 0U; i < 7U; ++i) {
@@ -102,6 +115,21 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
   int length;
   if (reply->error != NULL) {
     length = snprintf(line, size, "!WP1,%lu,ERR,%s,%s", id, actions[action], reply->error);
+  } else if (action == Q1_VCOM_Q3INFO) {
+    length = snprintf(line, size, "!WP1,%lu,OK,Q3INFO,3,%d,%u,%u,%u,%u",
+        id, APP_Q3_ROLL_SIGN, APP_Q3_MIN_LENGTH_MM, APP_Q3_MAX_LENGTH_MM,
+        APP_Q3_DURATION_MS, APP_Q3_DIRECTION_STEP_DEG);
+  } else if (action == Q1_VCOM_Q4INFO || action == Q1_VCOM_Q4ARM) {
+    const unsigned period = reply->telemetry_period_ms ?
+        reply->telemetry_period_ms : APP_Q1_TELEMETRY_PERIOD_MS;
+    length = snprintf(line, size,
+        "!WP1,%lu,OK,%s,4,%d,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%u,%lu,%u",
+        id, actions[action], APP_Q3_ROLL_SIGN, APP_Q4_ARM_TIMEOUT_MS, APP_Q4_DURATION_MS,
+        APP_Q4_RELEASE_MIN_DEG, APP_Q4_RELEASE_MAX_DEG, APP_Q4_HOLD_MS,
+        Milli(APP_Q4_RELEASE_RATE_DPS), APP_Q4_SETTLE_ANGLE_DEG, APP_Q4_SETTLE_RATE_DPS,
+        APP_Q4_SETTLE_MS, Milli(APP_Q4_STOP_ANGLE_DEG), Milli(APP_Q4_STOP_RATE_DPS),
+        Milli(APP_Q4_KP), Milli(APP_Q4_KD), APP_Q1_PWM_MAX_PERMILLE,
+        Milli(APP_Q1_RATE_FILTER_TAU_S), period);
   } else if (action == Q1_VCOM_INFO || action == Q1_VCOM_START) {
     const ProblemQ1_Config config = ProblemQ1_DefaultConfig();
     const Q1Swing_Tuning tuning = (action == Q1_VCOM_START) ?
@@ -133,7 +161,16 @@ int Q1Vcom_FormatReply(char *line, size_t size, const Q1Vcom_Reply *reply)
   } else {
     length = snprintf(line, size, "!WP1,%lu,OK,%s", id, actions[action]);
   }
-  if (length < 0 || (size_t)length + 8U > size) return 0;
+  if (length < 0 || (size_t)length >= size) return 0;
+  if (reply->error == NULL && action == Q1_VCOM_START &&
+      reply->request.problem_id == PROBLEM_Q3) {
+    const int suffix = snprintf(line + length, size - (size_t)length, ",3,%lu,%lu",
+        (unsigned long)reply->request.direction_deg,
+        (unsigned long)reply->request.line_length_mm);
+    if (suffix < 0 || (size_t)suffix >= size - (size_t)length) return 0;
+    length += suffix;
+  }
+  if ((size_t)length + 8U > size) return 0;
   const unsigned crc = Crc16(line);
   const int suffix = snprintf(line + length, size - (size_t)length, "*%04X\r\n", crc);
   return length + suffix;

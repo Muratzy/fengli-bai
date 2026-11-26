@@ -4,6 +4,14 @@ const BAUD_RATE = 115200;
 const BLUETOOTH_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
 const BLUETOOTH_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
 const BLUETOOTH_WRITE_CHUNK = 20;
+const PROTOCOL_TIMEOUT_MS = 1800;
+
+class ReplyTimeout extends Error {
+  constructor(writeCompleted) {
+    super(writeCompleted ? "STM32 应答超时" : "命令写入超时");
+    this.writeCompleted = writeCompleted;
+  }
+}
 
 function boardError(reply, label) {
   if (!reply.error) return null;
@@ -11,6 +19,7 @@ function boardError(reply, label) {
     BUSY: "STM32 正在运行",
     NOT_READY: "STM32 未就绪，检查 IMU、角度和停止键",
     PARAMETERS: "STM32 拒绝参数，请检查范围",
+    MIXER: "STM32 尚未校准 Q3 的上下电机推力方向",
   }[reply.error];
   const error = new Error(message || `${label}设备拒绝了 ${reply.error}`);
   error.boardRejected = true;
@@ -44,18 +53,20 @@ function createProtocolChannel(write, onLine, onLost, label) {
     if (reportLost) onLost(error);
   }
 
-  async function request(action, tuning) {
+  async function request(action, tuning, problem) {
     if (closed) throw new Error(`${label}未连接`);
     let id;
     do {
       id = crypto.getRandomValues(new Uint32Array(1))[0];
     } while (!id || pending.has(id));
     let timer;
+    let writeCompleted = false;
     try {
       const reply = await new Promise((resolve, reject) => {
         pending.set(id, { action, resolve, reject });
-        timer = setTimeout(() => reject(new Error("STM32 应答超时")), 1800);
-        write(new TextEncoder().encode(commandFrame(id, action, tuning))).catch(reject);
+        timer = setTimeout(() => reject(new ReplyTimeout(writeCompleted)), PROTOCOL_TIMEOUT_MS);
+        write(new TextEncoder().encode(commandFrame(id, action, tuning, problem)))
+          .then(() => { writeCompleted = true; }, reject);
       });
       const error = boardError(reply, label);
       if (error) throw error;
@@ -108,8 +119,8 @@ export class Vcom {
     }
   }
 
-  request(action, tuning) {
-    return this.#channel.request(action, tuning);
+  request(action, tuning, problem) {
+    return this.#channel.request(action, tuning, problem);
   }
 
   async close() {
@@ -197,8 +208,15 @@ export class BluetoothGatt {
     }
   }
 
-  request(action, tuning) {
-    return this.#channel.request(action, tuning);
+  async request(action, tuning, problem) {
+    const channel = this.#channel;
+    try {
+      return await channel.request(action, tuning, problem);
+    } catch (error) {
+      if (!(error instanceof ReplyTimeout) || !error.writeCompleted || !this.#server?.connected ||
+          !["INFO", "Q3INFO", "Q4INFO"].includes(action)) throw error;
+      return channel.request(action);
+    }
   }
 
   async close() {

@@ -97,6 +97,35 @@
 #define APP_Q2_MAX_LENGTH_MM           600U
 #define APP_Q2_DURATION_MS           15000U
 
+/* Q3 direction-line control. Like the left/right pair, each motor pushes
+ * the pendulum away from its mounting side. */
+#define APP_Q3_DURATION_MS           15000U
+#define APP_Q3_MIN_LENGTH_MM         200U
+#define APP_Q3_MAX_LENGTH_MM         600U
+#define APP_Q3_DEFAULT_LENGTH_MM     250U
+#define APP_Q3_DIRECTION_STEP_DEG    10U
+#ifndef APP_Q3_ROLL_SIGN
+#define APP_Q3_ROLL_SIGN             -1 /* PWM3 pushes down; PWM4 pushes up. */
+#endif
+#if (APP_Q3_ROLL_SIGN < -1) || (APP_Q3_ROLL_SIGN > 1)
+#error "Q3 Roll sign must be -1, 0 (unverified), or 1."
+#endif
+
+/* Q4 braking. Angles refer to the tilt from vertical. */
+#define APP_Q4_ARM_TIMEOUT_MS        20000U
+#define APP_Q4_DURATION_MS            5000U
+#define APP_Q4_RELEASE_MIN_DEG         30U
+#define APP_Q4_RELEASE_MAX_DEG         45U
+#define APP_Q4_HOLD_MS                150U
+#define APP_Q4_RELEASE_RATE_DPS         8.0F
+#define APP_Q4_SETTLE_ANGLE_DEG         2U
+#define APP_Q4_SETTLE_RATE_DPS          5U
+#define APP_Q4_SETTLE_MS              300U
+#define APP_Q4_STOP_ANGLE_DEG          50.0F
+#define APP_Q4_STOP_RATE_DPS          240.0F
+#define APP_Q4_KP                     10U
+#define APP_Q4_KD                      8U
+
 #if (APP_Q1_PWM_MAX_PERMILLE == 0U) || (APP_Q1_PWM_MAX_PERMILLE > 1000U)
 #error "Q1 PWM maximum must be within 1..1000 permille."
 #endif

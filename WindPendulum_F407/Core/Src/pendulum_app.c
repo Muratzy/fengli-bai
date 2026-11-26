@@ -8,6 +8,8 @@
 #include "app_config.h"
 #include "services/imu_frame.h"
 #include "problems/q1_swing.h"
+#include "problems/q3_direction.h"
+#include "problems/q4_brake.h"
 #include "services/q1_vcom.h"
 
 #include <math.h>
@@ -107,6 +109,8 @@ void USART6_IRQHandler(void)
 /* Non-halting SWD mailbox. Zero on reset. Consumed once; no automatic start. */
 volatile uint32_t g_q1_remote_command;
 volatile uint32_t g_q2_requested_length_mm = APP_Q2_DEFAULT_LENGTH_MM;
+volatile uint32_t g_q3_requested_length_mm = APP_Q3_DEFAULT_LENGTH_MM;
+volatile uint32_t g_q3_requested_direction_deg;
 static volatile uint32_t g_motor_fault_reason;
 static volatile bool g_q1_run_enabled;
 static volatile BaseType_t g_imu_ready;
@@ -350,7 +354,10 @@ static void TrajectoryTask(void *argument)
   (void)argument;
   FusionFrame frame = {0};
   Q1Swing swing = {0};
+  Q3Direction q3 = {0};
+  Q4Brake brake = {0};
   ProblemId selected_problem = PROBLEM_Q1;
+  uint32_t selected_direction_deg = 0U;
   uint32_t last_sample_ms = 0U;
   uint32_t last_remote = 0U;
   uint32_t vcom_trial_id = 0U;
@@ -371,14 +378,21 @@ static void TrajectoryTask(void *argument)
     const bool stop_key = HAL_GPIO_ReadPin(KEY3_GPIO_Port, KEY3_Pin) == GPIO_PIN_RESET;
     const bool sample_fresh = received && g_imu_ready != pdFALSE &&
         now - frame.sample.timestamp_ms <= 20U;
+    const Q4Sample brake_sample = {frame.roll_deg, frame.pitch_deg, frame.tilt_deg,
+        frame.roll_rate_dps, frame.pitch_rate_dps};
     if (last_remote == 0x51315354U) {
       Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+      if (brake.state == PROBLEM_STATUS_RUNNING) Q4Brake_Stop(&brake, Q1_SWING_USER_STOP);
       g_q1_run_enabled = false;
       last_remote = 0U;
     }
-    if (last_remote == 0x5131474FU || last_remote == 0x5132474FU) {
+    const ProblemId requested_problem = ProblemApi_DecodeStartCommand(last_remote);
+    if (requested_problem != PROBLEM_NONE) {
       if (!g_q1_run_enabled) {
-        selected_problem = (last_remote == 0x5132474FU) ? PROBLEM_Q2 : PROBLEM_Q1;
+        selected_problem = requested_problem;
+        selected_direction_deg = selected_problem == PROBLEM_Q3 ?
+            g_q3_requested_direction_deg : 0U;
+        q3 = (Q3Direction){0};
         vcom_trial_id = 0U;
         bool accepted = false;
         if (sample_fresh && !stop_key && now >= 2000U) {
@@ -386,17 +400,34 @@ static void TrajectoryTask(void *argument)
             const uint32_t length_mm = g_q2_requested_length_mm;
             accepted = Q1Swing_StartQ2(&swing, length_mm, now, frame.roll_deg,
                 frame.pitch_deg, frame.pitch_rate_dps);
+          } else if (selected_problem == PROBLEM_Q3) {
+            const ProblemParams params = {.line_length_mm = g_q3_requested_length_mm,
+                .direction_deg = selected_direction_deg};
+            accepted = Q3Direction_Start(&q3, &swing, &params, now, frame.roll_deg,
+                frame.pitch_deg, frame.roll_rate_dps, frame.pitch_rate_dps);
+          } else if (selected_problem == PROBLEM_Q4) {
+            swing = (Q1Swing){0};
+            brake = (Q4Brake){0};
+            accepted = Q4Brake_Arm(&brake, now, &brake_sample);
+            if (!accepted && brake.state == PROBLEM_STATUS_IDLE)
+              Q4Brake_Stop(&brake, Q1_SWING_NOT_CENTERED);
           } else {
             accepted = Q1Swing_Start(&swing, now, frame.roll_deg,
                 frame.pitch_deg, frame.pitch_rate_dps);
           }
         } else {
           swing = (Q1Swing){0};
-          Q1Swing_Stop(&swing, Q1_SWING_NOT_CENTERED);
+          if (selected_problem == PROBLEM_Q4) {
+            brake = (Q4Brake){0};
+            Q4Brake_Stop(&brake, Q1_SWING_NOT_CENTERED);
+          } else {
+            Q1Swing_Stop(&swing, Q1_SWING_NOT_CENTERED);
+          }
         }
         taskENTER_CRITICAL();
         if (accepted && g_q1_remote_command == 0x51315354U) {
           Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+          if (selected_problem == PROBLEM_Q4) Q4Brake_Stop(&brake, Q1_SWING_USER_STOP);
           accepted = false;
         }
         if (accepted) {
@@ -419,29 +450,87 @@ static void TrajectoryTask(void *argument)
       next_host = (host == &g_vcom) ? &g_bluetooth : &g_vcom;
       switch (reply.request.action) {
         case Q1_VCOM_INFO:
+        case Q1_VCOM_Q3INFO:
+        case Q1_VCOM_Q4INFO:
           break;
         case Q1_VCOM_STOP:
           g_q1_run_enabled = false;
           if (swing.state == Q1_SWING_RUNNING) {
             Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
           }
+          if (brake.state == PROBLEM_STATUS_RUNNING) Q4Brake_Stop(&brake, Q1_SWING_USER_STOP);
           break;
         case Q1_VCOM_RESET:
-          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING) {
+          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING ||
+              brake.state == PROBLEM_STATUS_RUNNING) {
             reply.error = "BUSY";
           } else {
             swing = (Q1Swing){0};
+            brake = (Q4Brake){0};
             selected_problem = PROBLEM_Q1;
             vcom_trial_id = 0U;
           }
           break;
+        case Q1_VCOM_Q4ARM: {
+          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING ||
+              brake.state == PROBLEM_STATUS_RUNNING) {
+            reply.error = "BUSY";
+          } else if (ProblemApi_ValidateStart(PROBLEM_Q4, NULL) != PROBLEM_REQUEST_ACCEPTED) {
+            reply.error = "MIXER";
+          } else if (!sample_fresh || stop_key || now < 2000U ||
+                     !Q4Brake_Arm(&brake, now, &brake_sample)) {
+            reply.error = "NOT_READY";
+          } else {
+            selected_problem = PROBLEM_Q4;
+            swing = (Q1Swing){0};
+            vcom_trial_id = 0U;
+            taskENTER_CRITICAL();
+            if (g_q1_remote_command == 0x51315354U) {
+              Q4Brake_Stop(&brake, Q1_SWING_USER_STOP);
+              reply.error = "NOT_READY";
+            } else {
+              g_motor_fault_reason = 0U;
+              g_q1_run_enabled = true;
+              vcom_trial_id = reply.request.id;
+            }
+            taskEXIT_CRITICAL();
+          }
+          break;
+        }
         case Q1_VCOM_START:
-          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING) {
+          if (g_q1_run_enabled || swing.state == Q1_SWING_RUNNING ||
+              brake.state == PROBLEM_STATUS_RUNNING) {
             reply.error = "BUSY";
           } else if (!sample_fresh || stop_key || now < 2000U ||
                      fabsf(frame.roll_deg) > APP_Q1_START_ANGLE_DEG ||
                      fabsf(frame.pitch_deg) > APP_Q1_START_ANGLE_DEG) {
             reply.error = "NOT_READY";
+          } else if (reply.request.problem_id == PROBLEM_Q3) {
+            const ProblemParams params = {
+                .line_length_mm = reply.request.line_length_mm,
+                .direction_deg = reply.request.direction_deg};
+            Q1Swing_Tuning tuning = reply.request.tuning;
+            tuning.duration_ms = APP_Q3_DURATION_MS;
+            if (ProblemApi_ValidateStart(PROBLEM_Q3, &params) != PROBLEM_REQUEST_ACCEPTED) {
+              reply.error = (APP_Q3_ROLL_SIGN == 0) ? "MIXER" : "PARAMETERS";
+            } else if (!Q3Direction_StartTuned(&q3, &swing, &params, &tuning, now,
+                frame.roll_deg, frame.pitch_deg, frame.roll_rate_dps,
+                frame.pitch_rate_dps)) {
+              reply.error = "PARAMETERS";
+            } else {
+              selected_problem = PROBLEM_Q3;
+              selected_direction_deg = params.direction_deg;
+              taskENTER_CRITICAL();
+              if (g_q1_remote_command == 0x51315354U) {
+                Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
+                reply.error = "NOT_READY";
+              } else {
+                g_motor_fault_reason = 0U;
+                g_q1_run_enabled = true;
+                vcom_trial_id = reply.request.id;
+              }
+              taskEXIT_CRITICAL();
+            }
           } else if (reply.request.tuning.target_amplitude_deg == 0.0F ||
                      !Q1Swing_StartTuned(&swing, &reply.request.tuning, now,
                          frame.roll_deg, frame.pitch_deg, frame.pitch_rate_dps)) {
@@ -466,20 +555,37 @@ static void TrajectoryTask(void *argument)
       }
       (void)xQueueSend(host->replies, &reply, 0U);
     }
-    if (swing.state == Q1_SWING_RUNNING) {
+    const bool braking_trial = selected_problem == PROBLEM_Q4;
+    if (braking_trial && brake.state == PROBLEM_STATUS_RUNNING) {
+      if (stop_key) {
+        Q4Brake_Stop(&brake, Q1_SWING_USER_STOP);
+      } else if (g_motor_fault_reason != 0U) {
+        Q4Brake_Stop(&brake, (Q1Swing_Reason)g_motor_fault_reason);
+      } else if (sample_fresh) {
+        Q4Brake_Step(&brake, now, &brake_sample);
+      } else if (now - brake.last_step_ms > 20U) {
+        Q4Brake_Stop(&brake, Q1_SWING_SAMPLE_STALE);
+      }
+    } else if (swing.state == Q1_SWING_RUNNING) {
       if (g_motor_fault_reason != 0U) {
         Q1Swing_Stop(&swing, (Q1Swing_Reason)g_motor_fault_reason);
       } else if (!sample_fresh && now - last_sample_ms > 20U) {
         Q1Swing_Stop(&swing, Q1_SWING_SAMPLE_STALE);
       } else if (sample_fresh) {
-        Q1Swing_Step(&swing, now, frame.roll_deg, frame.pitch_deg,
-                      frame.pitch_rate_dps, true, stop_key);
+        if (selected_problem == PROBLEM_Q3 && !stop_key) {
+          Q3Direction_Step(&q3, &swing, now, frame.roll_deg, frame.pitch_deg,
+              frame.roll_rate_dps, frame.pitch_rate_dps);
+        } else {
+          Q1Swing_Step(&swing, now, frame.roll_deg, frame.pitch_deg,
+                        frame.pitch_rate_dps, true, stop_key);
+        }
       } else if (stop_key) {
         Q1Swing_Stop(&swing, Q1_SWING_USER_STOP);
       }
     }
     if (received) last_sample_ms = frame.sample.timestamp_ms;
-    if (swing.state != Q1_SWING_RUNNING) g_q1_run_enabled = false;
+    if (braking_trial ? brake.state != PROBLEM_STATUS_RUNNING : swing.state != Q1_SWING_RUNNING)
+      g_q1_run_enabled = false;
 
     PendulumTelemetry command = {0};
     command.timestamp_ms = received ? frame.sample.timestamp_ms : now;
@@ -526,20 +632,41 @@ static void TrajectoryTask(void *argument)
     command.q1_vcom_trial_id = vcom_trial_id;
     command.q1_center_deg = swing.center_estimate_deg;
     command.q1_center_output = swing.center_output;
-    memcpy(command.pid_p, swing.control_output.p, sizeof(command.pid_p));
-    memcpy(command.pid_i, swing.control_output.i, sizeof(command.pid_i));
-    memcpy(command.pid_d, swing.control_output.d, sizeof(command.pid_d));
-    memcpy(command.pid_output, swing.control_output.axis_output,
+    const bool direction_line = selected_problem == PROBLEM_Q3;
+    const PendulumControl_Output *output = braking_trial ? &brake.output :
+        direction_line ? &q3.output : &swing.control_output;
+    if (braking_trial) {
+      command.q1_state = (uint8_t)brake.state;
+      command.q1_reason = (uint8_t)brake.reason;
+      command.q1_control_phase = (uint8_t)brake.phase;
+      command.q1_run_ms = brake.run_ms;
+      command.q1_duration_ms = APP_Q4_DURATION_MS;
+      command.pitch_kp = APP_Q4_KP;
+      command.pitch_kd = APP_Q4_KD;
+      command.filtered_pitch_rate_error_dps = brake.controller.axis_pid[PENDULUM_AXIS_PITCH].derivative;
+    } else if (direction_line) {
+      command.target_roll_deg = q3.target_roll_deg;
+      command.target_pitch_deg = q3.target_pitch_deg;
+      command.target_pitch_rate_dps = q3.target_pitch_rate_dps;
+    }
+    if (!direction_line || g_q1_run_enabled) {
+      memcpy(command.pid_p, output->p, sizeof(command.pid_p));
+      memcpy(command.pid_i, output->i, sizeof(command.pid_i));
+      memcpy(command.pid_d, output->d, sizeof(command.pid_d));
+      memcpy(command.pid_output, output->axis_output,
         sizeof(command.pid_output));
+    }
     command.target_length_mm = swing.reference.config.line_length_m > 0.0F ?
         (uint32_t)(swing.reference.config.line_length_m * 1000.0F + 0.5F) :
         ProblemApi_DefaultParams(selected_problem).line_length_mm;
     command.mode = (command.q1_state == Q1_SWING_RUNNING) ?
-        ((selected_problem == PROBLEM_Q2) ? PENDULUM_MODE_Q2_LINE : PENDULUM_MODE_LINE) :
+        (braking_trial ? PENDULUM_MODE_BRAKE : direction_line ? PENDULUM_MODE_Q3_LINE :
+         (selected_problem == PROBLEM_Q2) ? PENDULUM_MODE_Q2_LINE : PENDULUM_MODE_LINE) :
         (command.q1_state == Q1_SWING_FAULT) ? PENDULUM_MODE_Q1_BLOCKED : PENDULUM_MODE_READY;
     if (g_imu_ready == pdFALSE) command.mode = PENDULUM_MODE_IMU_FAULT;
     if (sample_fresh && g_q1_run_enabled) {
-      memcpy(command.pwm_permille, swing.pwm, sizeof(command.pwm_permille));
+      memcpy(command.pwm_permille, (braking_trial || direction_line) ? output->pwm_permille : swing.pwm,
+          sizeof(command.pwm_permille));
     }
     if (received) command.bus_current_adc = Board_ReadBusCurrentAdc();
     taskENTER_CRITICAL();
@@ -547,7 +674,8 @@ static void TrajectoryTask(void *argument)
         .id = selected_problem,
         .state = (ProblemStatusCode)command.q1_state,
         .reason = command.q1_reason, .elapsed_ms = command.q1_run_ms,
-        .line_length_mm = command.target_length_mm};
+        .line_length_mm = command.target_length_mm,
+        .direction_deg = direction_line ? selected_direction_deg : 0U};
     g_pending_start_command = 0U;
     taskEXIT_CRITICAL();
     (void)xQueueOverwrite(g_control_queue, &command);
@@ -574,8 +702,7 @@ static void MotorTask(void *argument)
   uint32_t beep_until = 0U;
   uint8_t previous_state = Q1_SWING_IDLE;
   bool previous_output = false;
-  uint16_t previous_left = 0U;
-  uint16_t previous_right = 0U;
+  uint8_t previous_channels = 0U;
   uint32_t en_released_ms = 0U;
   watchdog.Instance = IWDG;
   watchdog.Init.Prescaler = IWDG_PRESCALER_32;
@@ -588,9 +715,15 @@ static void MotorTask(void *argument)
         pdMS_TO_TICKS(5U)) == pdPASS;
     const uint32_t now = HAL_GetTick();
     const bool stop = HAL_GPIO_ReadPin(KEY3_GPIO_Port, KEY3_Pin) == GPIO_PIN_RESET;
+    const bool direction_line = APP_Q3_ROLL_SIGN != 0 &&
+        command.problem_id == PROBLEM_Q3 && command.mode == PENDULUM_MODE_Q3_LINE;
+    const bool braking = APP_Q3_ROLL_SIGN != 0 && command.problem_id == PROBLEM_Q4 &&
+        command.mode == PENDULUM_MODE_BRAKE && command.q1_control_phase == Q4_BRAKING;
+    const bool two_axis = direction_line || braking;
     bool active = g_q1_run_enabled && g_motor_fault_reason == 0U &&
         command.q1_state == Q1_SWING_RUNNING &&
-        (command.mode == PENDULUM_MODE_LINE || command.mode == PENDULUM_MODE_Q2_LINE);
+        (two_axis || command.mode == PENDULUM_MODE_LINE ||
+         command.mode == PENDULUM_MODE_Q2_LINE);
     if (active && (stop || g_imu_ready == pdFALSE ||
         now - command.timestamp_ms > 20U || !isfinite(command.pitch_deg) ||
         !isfinite(command.roll_deg))) {
@@ -601,22 +734,37 @@ static void MotorTask(void *argument)
       g_motor_fault_reason = Q1_SWING_SAMPLE_STALE;
       active = false;
     }
-    const bool valid_output = command.pwm_permille[2] == 0U &&
-        command.pwm_permille[3] == 0U &&
-        command.pwm_permille[0] <= APP_Q1_PWM_MAX_PERMILLE &&
-        command.pwm_permille[1] <= APP_Q1_PWM_MAX_PERMILLE &&
-        (command.pwm_permille[0] == 0U || command.pwm_permille[1] == 0U);
+    uint32_t total_duty = 0U;
+    uint8_t channels_on = 0U;
+    for (uint32_t ch = 0U; ch < 4U; ++ch) {
+      total_duty += command.pwm_permille[ch];
+      if (command.pwm_permille[ch] != 0U) channels_on |= (uint8_t)(1U << ch);
+    }
+    const bool valid_output = total_duty <= APP_Q1_PWM_MAX_PERMILLE &&
+        (channels_on & 0x03U) != 0x03U &&
+        (two_axis ? (channels_on & 0x0CU) != 0x0CU : (channels_on & 0x0CU) == 0U);
+    const bool angle_limit = braking ?
+        (!isfinite(command.tilt_deg) || command.tilt_deg > APP_Q4_STOP_ANGLE_DEG ||
+         !isfinite(command.pitch_rate_dps) || !isfinite(command.roll_rate_dps) ||
+         hypotf(command.pitch_rate_dps, command.roll_rate_dps) > APP_Q4_STOP_RATE_DPS) : direction_line ?
+        hypotf(command.pitch_deg, command.roll_deg) > APP_Q1_STOP_PITCH_DEG :
+        (fabsf(command.pitch_deg) > APP_Q1_STOP_PITCH_DEG ||
+         fabsf(command.roll_deg) > APP_Q1_STOP_ROLL_DEG);
     if (active && (!valid_output || command.q1_run_ms >= command.q1_duration_ms ||
-        fabsf(command.pitch_deg) > APP_Q1_STOP_PITCH_DEG ||
-        fabsf(command.roll_deg) > APP_Q1_STOP_ROLL_DEG)) {
+        angle_limit)) {
       g_motor_fault_reason = Q1_SWING_ANGLE_LIMIT;
       active = false;
     }
-    /* Keep EN stable during a ramp on the same side. Gate channel changes
-     * and latch all preload registers before re-enabling the bridge. */
-    const bool channel_changed =
-        ((command.pwm_permille[0] > 0U) != (previous_left > 0U)) ||
-        ((command.pwm_permille[1] > 0U) != (previous_right > 0U));
+    if (braking && channels_on == 0U) active = false;
+    /* Sample the released line before intentionally pulsing EN low
+     * for a channel change. This also checks EN during frequent changes. */
+    if (active && two_axis && previous_output && now - en_released_ms >= 50U &&
+        HAL_GPIO_ReadPin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin) == GPIO_PIN_RESET) {
+      g_motor_fault_reason = Q1_SWING_EN_LOW;
+      active = false;
+    }
+    /* Gate channel changes and latch every preload before releasing EN. */
+    const bool channel_changed = channels_on != previous_channels;
     if (!active || channel_changed) {
       HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_RESET);
     }
@@ -629,10 +777,10 @@ static void MotorTask(void *argument)
     if (active) {
       if (!previous_output || channel_changed) {
         (void)HAL_TIM_GenerateEvent(&htim1, TIM_EVENTSOURCE_UPDATE);
-        en_released_ms = now;
+        if (!previous_output || !two_axis) en_released_ms = now;
       }
       HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_SET);
-      if (now - en_released_ms >= 50U &&
+      if (!two_axis && now - en_released_ms >= 50U &&
           HAL_GPIO_ReadPin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin) == GPIO_PIN_RESET) {
         g_motor_fault_reason = Q1_SWING_EN_LOW;
         HAL_GPIO_WritePin(MOTOR_ENABLE_GPIO_Port, MOTOR_ENABLE_Pin, GPIO_PIN_RESET);
@@ -661,8 +809,7 @@ static void MotorTask(void *argument)
     }
     previous_state = command.q1_state;
     previous_output = active;
-    previous_left = active ? command.pwm_applied_permille[0] : 0U;
-    previous_right = active ? command.pwm_applied_permille[1] : 0U;
+    previous_channels = active ? channels_on : 0U;
     (void)HAL_IWDG_Refresh(&watchdog);
   }
 }
@@ -716,7 +863,7 @@ static void TelemetryTask(void *argument)
     if (xQueueReceive(g_telemetry_queue, &data, pdMS_TO_TICKS(20U)) != pdPASS) {
       continue;
     }
-    const unsigned pwm_limit = (data.problem_id == PROBLEM_Q1 || data.problem_id == PROBLEM_Q2) ?
+    const unsigned pwm_limit = (data.problem_id >= PROBLEM_Q1 && data.problem_id <= PROBLEM_Q4) ?
         APP_Q1_PWM_MAX_PERMILLE : 0U;
     const int length = snprintf(line, sizeof(line),
         "%lu,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,"
@@ -868,8 +1015,12 @@ ProblemRequestResult PendulumApp_RequestProblemStart(ProblemId id,
     taskEXIT_CRITICAL();
     return PROBLEM_REQUEST_BUSY;
   }
-  if (id == PROBLEM_Q2)
+  if (id == PROBLEM_Q2) {
     g_q2_requested_length_mm = (params == NULL) ? defaults.line_length_mm : params->line_length_mm;
+  } else if (id == PROBLEM_Q3) {
+    g_q3_requested_length_mm = (params == NULL) ? defaults.line_length_mm : params->line_length_mm;
+    g_q3_requested_direction_deg = (params == NULL) ? defaults.direction_deg : params->direction_deg;
+  }
   g_q1_remote_command = ProblemApi_StartCommand(id);
   taskEXIT_CRITICAL();
   return PROBLEM_REQUEST_ACCEPTED;
@@ -891,14 +1042,17 @@ bool PendulumApp_GetProblemStatus(ProblemStatus *status)
   *status = g_problem_status;
   const uint32_t pending = (g_q1_remote_command != 0U) ?
       g_q1_remote_command : g_pending_start_command;
+  const ProblemId requested_problem = ProblemApi_DecodeStartCommand(pending);
   if (pending == 0x51315354U) status->state = PROBLEM_STATUS_STOPPING;
-  else if (pending == 0x5131474FU || pending == 0x5132474FU) {
-    status->id = (pending == 0x5132474FU) ? PROBLEM_Q2 : PROBLEM_Q1;
+  else if (requested_problem != PROBLEM_NONE) {
+    status->id = requested_problem;
     status->state = PROBLEM_STATUS_QUEUED;
     status->elapsed_ms = 0U;
     status->reason = 0U;
-    status->line_length_mm = (status->id == PROBLEM_Q2) ?
-        g_q2_requested_length_mm : ProblemApi_DefaultParams(PROBLEM_Q1).line_length_mm;
+    status->line_length_mm = (status->id == PROBLEM_Q3) ? g_q3_requested_length_mm :
+        (status->id == PROBLEM_Q2) ? g_q2_requested_length_mm :
+        ProblemApi_DefaultParams(status->id).line_length_mm;
+    status->direction_deg = (status->id == PROBLEM_Q3) ? g_q3_requested_direction_deg : 0U;
   }
   taskEXIT_CRITICAL();
   return true;

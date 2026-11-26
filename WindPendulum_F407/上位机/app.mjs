@@ -1,7 +1,8 @@
-import { isClockReset, parseTelemetry, snapshotFields, tuningKeys } from "./protocol.mjs";
+import { isClockReset, parseTelemetry, q4SnapshotFields, snapshotFields, tuningKeys } from "./protocol.mjs";
 import { BluetoothGatt, Vcom } from "./serial.mjs";
 import { archiveTrial, historyOperation, openArchiveSettings, openHistory,
   trialCsv, trialFilename } from "./storage.mjs";
+import { projectTrialPoint, targetHalfSpanCm } from "./trial_geometry.mjs";
 import { chart, measuredColor, referenceColor, secondaryColor } from "./charts.mjs";
 
 const byId = id => document.getElementById(id);
@@ -12,12 +13,16 @@ const gainKeys = tuningKeys.filter(key => key !== "targetDeg");
 const degreesPerRadian = 180 / Math.PI;
 const controls = Object.fromEntries(["connect", "start", "stop", "reset"].map(id => [id, byId(id)]));
 const connectionMode = byId("connection-mode");
+const problemButtons = [...byId("problem-switcher").querySelectorAll("[data-problem]")];
+const problemFields = [...form.querySelectorAll("[data-problem-fields]")];
+const problemNames = ["", "Q1/Q2 共用直线控制", "Q2 独立入口已弃用", "指定方向直线", "制动", "圆周轨迹", "抗风扰", "扩展题目"];
 const states = ["待机", "运行中", "已完成", "已停止", "保护停机"];
 const reasons = ["", "到时", "手动停止", "数据过期", "超角或超速", "未检测到换向",
-  "EN 低电平", "起摆条件不符", "配置无效"];
+  "EN 低电平", "启动条件不符", "配置无效", "已停稳", "等待释放超时", "5 秒内未停稳"];
 const phases = ["启动 PD", "切换混合", "幅值 PID"];
+const brakePhases = ["等待释放", "主动制动", "停稳观察"];
 const terminal = row => row.state >= 2;
-const trialLabel = id => "#" + String(id).padStart(3, "0");
+const trialLabel = (id, problem = 1) => "Q" + problem + "-" + String(id).padStart(3, "0");
 const nowIso = () => new Date().toISOString();
 const archiveButton = byId("archive-directory");
 const archiveStatus = byId("archive-status");
@@ -26,6 +31,9 @@ const archivePickerSupported = typeof window.showDirectoryPicker === "function";
 let database;
 let serial;
 let boardConfig;
+let q3Info;
+let q4Info;
+let activeTransportMode;
 let connecting = false;
 let starting;
 let resetting = false;
@@ -47,7 +55,43 @@ let archiveDirectory;
 let archiveQueue = Promise.resolve();
 const archivedRecords = new Set();
 let transportMode = localStorage.getItem("wind-pendulum-transport") || "jlink";
+let selectedProblem = Number(localStorage.getItem("wind-pendulum-problem") || 1);
+if (!["jlink", "bluetooth"].includes(transportMode)) transportMode = "jlink";
+if (![1, 3, 4].includes(selectedProblem)) selectedProblem = 1;
 connectionMode.value = transportMode;
+
+function setSelectedProblem(problem, announce = true) {
+  if (!problemNames[problem] || problem === 2 || active || starting || connecting) return;
+  selectedProblem = problem;
+  localStorage.setItem("wind-pendulum-problem", String(problem));
+  const title = (problem === 1 ? "Q1/Q2" : "Q" + problem) + " 实验台";
+  byId("page-title").textContent = title;
+  document.title = "风力摆 · " + title;
+  problemButtons.forEach(button => {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.problem) === problem));
+  });
+  problemFields.forEach(section => {
+    section.hidden = Number(section.dataset.problemFields) !== problem;
+    for (const field of section.querySelectorAll("input")) field.disabled = section.hidden;
+  });
+  const q1 = problem === 1;
+  const q3 = problem === 3;
+  byId("q1-duration-setting").hidden = !q1;
+  if (problem > 4) {
+    byId("problem-control-note").textContent = "Q" + problem + " 尚未接入控制器。";
+  }
+  controls.start.textContent = problem === 4 ? "预备 Q4" :
+      q3 ? "通过蓝牙下发并启动 Q3" : "下发并启动 Q1/Q2";
+  dirty = true;
+  if (q3 && !serial) {
+    transportMode = "bluetooth";
+    connectionMode.value = transportMode;
+    localStorage.setItem("wind-pendulum-transport", transportMode);
+  }
+  if (announce) notify("已切换到 Q" + problem + " · " + problemNames[problem] + "。" +
+    (q3 ? "参数下发和启动使用蓝牙 GATT。" : ""));
+  updateControls();
+}
 
 function notify(message, error = false) {
   byId("message").textContent = message;
@@ -55,7 +99,8 @@ function notify(message, error = false) {
 }
 
 function telemetryAgeLimit(periods, minimumMs) {
-  const periodMs = boardConfig?.telemetryMs ?? (transportMode === "bluetooth" ? 1000 : 20);
+  const periodMs = (selectedProblem === 4 ? q4Info?.telemetryMs : undefined) ??
+      boardConfig?.telemetryMs ?? (transportMode === "bluetooth" ? 1000 : 20);
   return Math.max(minimumMs, periods * periodMs);
 }
 
@@ -67,22 +112,60 @@ function updateControls() {
   controls.connect.textContent = serial ? "断开连接" :
     transportMode === "bluetooth" ? "连接蓝牙" : "连接 J-Link";
   controls.connect.disabled = connecting || (!canConnect && !serial);
-  controls.start.disabled = !(serial && boardConfig?.mode === 1 && database && idle &&
-    [2, 7].includes(latest.mode) && !starting && !active && !resetting && !stopping);
-  controls.stop.disabled = !(serial && boardConfig && !stopping);
-  controls.reset.disabled = !(serial && boardConfig && idle && !starting && !active && !resetting && !stopping);
+  const readyMode = boardConfig?.mode === 1 && idle && [2, 7].includes(latest.mode);
+  const q1Ready = selectedProblem === 1;
+  const q3Ready = selectedProblem === 3 && activeTransportMode === "bluetooth" &&
+      q3Info?.directionSign !== 0 && Boolean(q3Info);
+  const q4Ready = selectedProblem === 4 && Boolean(q4Info?.directionSign) &&
+      latest?.tilt <= q4Info.releaseMaxDeg;
+  controls.start.disabled = !(serial && database && (readyMode && (q1Ready || q3Ready) ||
+    q4Ready && idle && [2, 7].includes(latest.mode)) &&
+    !starting && !active && !resetting && !stopping);
+  if (selectedProblem === 3 && q3Info?.directionSign === 0)
+    byId("problem-control-note").textContent = "Q3 上下电机推力方向未校准，启动已锁定。";
+  else if (selectedProblem === 3 && serial && activeTransportMode !== "bluetooth")
+    byId("problem-control-note").textContent = "请断开 J-Link，再选择蓝牙连接 Q3。";
+  else if (selectedProblem === 3 && !q3Info && serial)
+    byId("problem-control-note").textContent = "当前固件未确认 Q3 蓝牙调参协议。";
+  else if (selectedProblem === 3)
+    byId("problem-control-note").textContent = q3Info
+      ? "运行窗口 " + q3Info.durationMs / 1000 + " 秒。"
+      : "连接蓝牙后读取 Q3 能力和电机方向校准状态。";
+  else if (selectedProblem === 4)
+    byId("problem-control-note").textContent = q4Info?.directionSign === 0
+      ? "Q4 上下电机推力方向未校准，预备已锁定。"
+      : q4Info ? "预备后拉到 " + q4Info.releaseMinDeg + "–" + q4Info.releaseMaxDeg +
+        "°，静止保持至少 " + q4Info.holdMs + " ms 再松手。检测到释放后开始计时。"
+        : serial ? "当前固件未确认 Q4 预备协议。" : "连接后读取 Q4 制动参数。";
+  byId("problem-control-note").hidden = selectedProblem === 1;
+  controls.stop.disabled = !(serial && (boardConfig || q4Info) && !stopping);
+  controls.reset.disabled = !(serial && (boardConfig || q4Info) && idle && !starting && !active && !resetting && !stopping);
   connectionMode.disabled = Boolean(serial || connecting || active);
-  for (const field of form.querySelectorAll("input")) field.disabled = Boolean(starting || active);
-  durationInput.disabled = Boolean(starting || active || (boardConfig && !boardConfig.maxDurationMs));
+  problemButtons.forEach(button => {
+    button.disabled = Number(button.dataset.problem) === 2 || Boolean(starting || active);
+  });
+  for (const section of problemFields) {
+    const hidden = Number(section.dataset.problemFields) !== selectedProblem;
+    for (const field of section.querySelectorAll("input"))
+      field.disabled = hidden || Boolean(starting || active);
+  }
+  durationInput.disabled = selectedProblem !== 1 || Boolean(starting || active ||
+    (boardConfig && !boardConfig.maxDurationMs));
   const connected = byId("connection");
   connected.dataset.state = serial && fresh ? "ready" : "idle";
   const transportLabel = transportMode === "bluetooth" ? "蓝牙" : "J-Link";
   connected.textContent = connecting ? "正在连接" : !serial ?
     transportLabel + " 未连接" : !fresh ? transportLabel + (latest ? " · 遥测超时" : " · 等待遥测") :
     boardConfig ? transportLabel + " · 在线" : transportLabel + " · 只读";
+  const problemLabel = latest?.problem > 0 ? "Q" + latest.problem + " · " : "";
   byId("board-state").textContent = fresh
-    ? (latest.mode <= 1 ? "IMU 未就绪" : states[latest.state]) : "—";
+    ? (latest.mode <= 1 ? "IMU 未就绪" : problemLabel + states[latest.state]) : "—";
   byId("run-id").textContent = shownId ?? "—";
+  byId("serial-summary").textContent = selectedProblem === 3 ? "Q3 调试 · 仅 BLE" :
+    (selectedProblem === 4 ? "Q4 制动 · " : "Q1/Q2 共用控制 · ") +
+    (transportMode === "bluetooth" ? "BLE" : "J-Link");
+  byId("serial-settings").textContent = transportMode === "bluetooth"
+    ? "USART6 · 9600 · 8-N-1" : "115200 · 8-N-1";
 }
 
 function updateDurationSetting() {
@@ -115,6 +198,45 @@ function updateTargetAngle() {
 function updateSpanLimits() {
   targetSpan.min = (Math.ceil(spanForAngle(5) * 100) / 100).toFixed(2);
   targetSpan.max = (Math.floor(spanForAngle(20) * 100) / 100).toFixed(2);
+}
+
+async function refreshQ3Info(connection = serial) {
+  q3Info = undefined;
+  if (!connection || activeTransportMode !== "bluetooth") {
+    updateControls();
+    return;
+  }
+  try {
+    const reply = await connection.request("Q3INFO");
+    if (serial !== connection) return;
+    q3Info = reply.q3Info;
+    if (q3Info) {
+      form.elements.q3LineLengthCm.min = q3Info.minLengthMm / 10;
+      form.elements.q3LineLengthCm.max = q3Info.maxLengthMm / 10;
+      form.elements.q3DirectionDeg.step = q3Info.directionStepDeg;
+    }
+  } catch (error) {
+    if (serial === connection && selectedProblem === 3)
+      notify("题目能力查询失败 · 请确认固件包含 BLE 启动协议。", true);
+  }
+  updateControls();
+}
+
+async function refreshQ4Info(connection = serial) {
+  q4Info = undefined;
+  updateControls();
+  try {
+    const reply = await connection.request("Q4INFO");
+    if (serial === connection) {
+      q4Info = reply.snapshot;
+      byId("q4-pd").textContent = "双轴 PD · Kp " + q4Info.brakeKp + " · Kd " +
+        q4Info.brakeKd + " · 总 PWM 上限 " + q4Info.pwmPercent + "%";
+    }
+  } catch (error) {
+    if (serial === connection && selectedProblem === 4)
+      notify("Q4 能力查询失败 · " + error.message, true);
+  }
+  updateControls();
 }
 
 function showArchiveStatus(message, error = false) {
@@ -179,6 +301,7 @@ function finish(status, row) {
   record.finishedAt = nowIso();
   record.endState = row?.state;
   record.endReason = row?.reason;
+  if (record.problemId === 4) record.endRunMs = row?.runTime;
   void save(record);
   syncArchive();
   renderHistory();
@@ -186,7 +309,7 @@ function finish(status, row) {
 }
 
 function addTrialFrame(row) {
-  if (row.problem !== 1 || row.trialId !== active.commandId) return;
+  if (row.problem !== active.problemId || row.trialId !== active.commandId) return;
   active.rows.push(row.line);
   if (terminal(row)) {
     const status = reasons[row.reason] || states[row.state];
@@ -196,7 +319,8 @@ function addTrialFrame(row) {
 }
 
 function receiveTelemetry(line) {
-  const row = parseTelemetry(line);
+  const direction = active?.snapshot.directionDeg ?? starting?.directionDeg;
+  const row = parseTelemetry(line, direction);
   if (!row) return;
   if (latest && isClockReset(latest.time, row.time)) {
     finish("STM32 重启");
@@ -211,7 +335,7 @@ function receiveTelemetry(line) {
   live.push(row);
   if (live.length > 1200) live = live.slice(-800);
   if (starting) {
-    if (row.problem === 1 && row.trialId !== 0) starting.frames.push(row);
+    if (row.problem === starting.problemId && row.trialId !== 0) starting.frames.push(row);
   } else if (active) {
     addTrialFrame(row);
   }
@@ -222,7 +346,16 @@ function receiveTelemetry(line) {
 async function disconnect(message, isError = false) {
   const current = serial;
   serial = undefined;
+  activeTransportMode = undefined;
   boardConfig = undefined;
+  q3Info = undefined;
+  q4Info = undefined;
+  byId("q4-pd").textContent = "连接后读取板端制动参数。";
+  if (selectedProblem === 3) {
+    transportMode = "bluetooth";
+    connectionMode.value = transportMode;
+    localStorage.setItem("wind-pendulum-transport", transportMode);
+  }
   updateDurationSetting();
   updateSpanLimits();
   updateTargetAngle();
@@ -241,12 +374,24 @@ connectionMode.addEventListener("change", async () => {
     notify("实验或连接进行中，不能切换连接方式。", true);
     return;
   }
+  if (selectedProblem === 3 && connectionMode.value !== "bluetooth") {
+    connectionMode.value = "bluetooth";
+    notify("Q3 调试使用蓝牙 GATT。", true);
+    return;
+  }
   transportMode = connectionMode.value;
   localStorage.setItem("wind-pendulum-transport", transportMode);
   updateControls();
   const label = transportMode === "bluetooth" ? "蓝牙 GATT" : "J-Link VCOM";
   notify(label + " 已选中。点击连接开始监测。");
 });
+
+problemButtons.forEach(button => button.addEventListener("click", () => {
+  setSelectedProblem(Number(button.dataset.problem));
+  if (selectedProblem === 3 && serial && activeTransportMode === "bluetooth")
+    void refreshQ3Info();
+  if (selectedProblem === 4 && serial) void refreshQ4Info();
+}));
 
 controls.connect.addEventListener("click", async () => {
   if (serial) {
@@ -270,6 +415,7 @@ controls.connect.addEventListener("click", async () => {
       });
     }
     serial = current;
+    activeTransportMode = transportMode;
     originTime = undefined;
     live = [];
     dirty = true;
@@ -283,9 +429,21 @@ controls.connect.addEventListener("click", async () => {
       const defaultSpan = Number(spanForAngle(boardConfig.targetDeg).toFixed(2));
       targetSpan.value = Math.min(Number(targetSpan.max), Math.max(Number(targetSpan.min), defaultSpan));
       updateTargetAngle();
-      notify("STM32 已连接。参数随下次启动下发。");
+      if (selectedProblem === 3 && activeTransportMode === "bluetooth") {
+        await refreshQ3Info(current);
+        if (!q3Info) notify("蓝牙已连接，但固件未确认 Q3 启动协议。", true);
+        else if (selectedProblem === 3 && q3Info.directionSign === 0)
+          notify("蓝牙已连接，Q3 推力方向尚未校准。", true);
+        else notify("蓝牙已连接，题目启动能力已确认。");
+      } else if (selectedProblem !== 4) {
+        notify("STM32 已连接。参数随下次启动下发。");
+      }
     } catch (error) {
       if (serial === current) notify("连接已打开，INFO 失败 · " + error.message, true);
+    }
+    if (serial === current && selectedProblem === 4) {
+      await refreshQ4Info(current);
+      if (q4Info?.directionSign) notify("STM32 已连接，可以预备 Q4。");
     }
   } catch (error) {
     await current?.close();
@@ -299,7 +457,7 @@ controls.connect.addEventListener("click", async () => {
 async function startTrial() {
   if (controls.start.disabled) return;
   if (!form.checkValidity()) {
-    const section = durationInput.validity.valid ? "tuning" : "experiment";
+    const section = durationInput.disabled || durationInput.validity.valid ? "tuning" : "experiment";
     if (byId(section).hidden) {
       location.hash = section;
       updateNavigation();
@@ -307,26 +465,49 @@ async function startTrial() {
     form.reportValidity();
     return;
   }
-  const tuning = Object.fromEntries(gainKeys.map(key => [key, form.elements[key].valueAsNumber]));
-  tuning.targetDeg = targetAngle();
-  if (boardConfig.maxDurationMs) tuning.durationMs = Math.round(durationInput.valueAsNumber * 1000);
+  const q3 = selectedProblem === 3;
+  const q4 = selectedProblem === 4;
+  const tuning = q4 ? undefined : q3 ? {
+    startupKp: form.elements.q3StartupKp.valueAsNumber,
+    startupKd: form.elements.q3StartupKd.valueAsNumber,
+    amplitudeKp: form.elements.q3AmplitudeKp.valueAsNumber,
+    amplitudeKi: form.elements.q3AmplitudeKi.valueAsNumber,
+    amplitudeKd: form.elements.q3AmplitudeKd.valueAsNumber,
+    compensation: form.elements.q3Compensation.valueAsNumber,
+  } : Object.fromEntries(gainKeys.map(key => [key, form.elements[key].valueAsNumber]));
+  const lineLengthMm = q3 ? Math.round(form.elements.q3LineLengthCm.valueAsNumber * 10) : undefined;
+  const directionDeg = q3 ? form.elements.q3DirectionDeg.valueAsNumber : undefined;
+  if (tuning) {
+    tuning.targetDeg = q3
+      ? Math.round(Math.atan((lineLengthMm / 2000) / (boardConfig.pivotM ?? 0.99)) * 180000 / Math.PI) / 1000
+      : targetAngle();
+    tuning.durationMs = q3 ? q3Info.durationMs :
+      (boardConfig.maxDurationMs ? Math.round(durationInput.valueAsNumber * 1000) : undefined);
+  }
+  const problemOptions = q3 ? { id: 3, directionDeg, lineLengthMm } : null;
   const current = serial;
-  const capture = { frames: [] };
+  const capture = { frames: [], problemId: selectedProblem, directionDeg };
   starting = capture;
   updateControls();
   const startedAt = nowIso();
   let accepted;
   try {
-    accepted = await current.request("START", tuning);
-    if (tuning.durationMs !== undefined && accepted.snapshot.durationMs !== tuning.durationMs) {
+    accepted = await current.request(q4 ? "Q4ARM" : "START", tuning, problemOptions);
+    if (tuning?.durationMs !== undefined && accepted.snapshot.durationMs !== tuning.durationMs) {
       throw new Error("STM32 确认的运行时长与设定不一致");
     }
+    if (q3 && (accepted.snapshot.problemId !== 3 || accepted.snapshot.directionDeg !== directionDeg ||
+        accepted.snapshot.lineLengthMm !== lineLengthMm)) {
+      throw new Error("STM32 确认的 Q3 方向或长度与设定不一致");
+    }
+    const snapshot = { ...accepted.snapshot, problemId: selectedProblem };
     const record = {
       protocol: "WP1",
+      problemId: selectedProblem,
       commandId: accepted.id,
       startedAt,
       acceptedAt: nowIso(),
-      snapshot: accepted.snapshot,
+      snapshot,
       rows: [],
       status: "采集中",
     };
@@ -335,7 +516,7 @@ async function startTrial() {
     } catch (error) {
       record.id = "临时-" + accepted.id;
     }
-    shownId = typeof record.id === "number" ? trialLabel(record.id) : record.id;
+    shownId = typeof record.id === "number" ? trialLabel(record.id, record.problemId) : record.id;
     history.set(record.id, record);
     active = record;
     trajectoryRecord = record;
@@ -346,7 +527,7 @@ async function startTrial() {
     }
     if (active && serial !== current) finish("连接断开，记录未完成");
     else if (active) {
-      notify(typeof record.id === "number" ? shownId + " 已启动，参数已归档。" :
+      notify(typeof record.id === "number" ? shownId + (q4 ? " 已预备，可以拉摆。" : " 已启动，参数已归档。") :
         "本地存储不可用，请在本轮结束后下载数据。", typeof record.id !== "number");
     }
     renderHistory();
@@ -374,6 +555,12 @@ form.addEventListener("submit", event => {
   void startTrial();
 });
 targetSpan.addEventListener("input", updateTargetAngle);
+form.elements.q3DirectionDeg.addEventListener("input", () => {
+  const angle = form.elements.q3DirectionDeg.valueAsNumber;
+  byId("q3-direction-hint").textContent = Number.isFinite(angle)
+    ? "方向 " + angle + "° · 上 0° · 右 90° · 下 180° · 左 270°"
+    : "上 0° · 右 90° · 下 180° · 左 270°";
+});
 
 controls.stop.addEventListener("click", async () => {
   stopping = true;
@@ -418,10 +605,10 @@ function download(name, content, type) {
 }
 
 function snapshot(record) {
-  byId("snapshot-title").textContent = trialLabel(record.id) + " 参数快照";
+  byId("snapshot-title").textContent = trialLabel(record.id, record.problemId) + " 参数快照";
   const container = byId("snapshot-fields");
   container.replaceChildren();
-  for (const [key, label] of snapshotFields) {
+  for (const [key, label] of record.problemId === 4 ? q4SnapshotFields : snapshotFields) {
     const title = document.createElement("dt");
     const value = document.createElement("dd");
     title.textContent = label;
@@ -437,7 +624,7 @@ function selectTrajectory(record) {
     button.setAttribute("aria-pressed", String(button.dataset.trial === String(record.id)));
   }
   drawTrajectory(true);
-  byId("trial-trajectory").scrollIntoView({ block: "nearest" });
+  byId(record.problemId === 4 ? "trial-brake" : "trial-trajectory").scrollIntoView({ block: "nearest" });
 }
 
 function renderHistory() {
@@ -450,7 +637,7 @@ function renderHistory() {
     const row = tbody.insertRow();
     const check = document.createElement("input");
     check.type = "checkbox";
-    check.setAttribute("aria-label", "对比 " + trialLabel(record.id));
+    check.setAttribute("aria-label", "对比 " + trialLabel(record.id, record.problemId));
     check.disabled = !record.rows.length || active === record;
     check.checked = selected.has(record.id);
     check.addEventListener("change", () => {
@@ -465,18 +652,21 @@ function renderHistory() {
     const trial = document.createElement("button");
     trial.className = "trial-number";
     trial.dataset.trial = record.id;
-    trial.textContent = trialLabel(record.id);
-    trial.setAttribute("aria-label", "查看 " + trialLabel(record.id) + " 轨迹");
+    trial.textContent = trialLabel(record.id, record.problemId);
+    trial.setAttribute("aria-label", "查看 " + trialLabel(record.id, record.problemId) + " 轨迹");
     trial.setAttribute("aria-pressed", String(record === trajectoryRecord));
     trial.setAttribute("aria-controls", "trial-trajectory");
     trial.addEventListener("click", () => selectTrajectory(record));
     row.insertCell().append(trial);
     row.insertCell().textContent = new Date(record.startedAt).toLocaleString("zh-CN", { hour12: false });
     row.insertCell().textContent = record.status === "采集中" && active !== record
-      ? "记录中断" : record.status;
+      ? "记录中断" : record.status + (record.endReason === 9 ? " · " +
+        (record.endRunMs / 1000).toFixed(2) + " s" : "");
     const parameters = row.insertCell();
     const snapshotButton = document.createElement("button");
-    snapshotButton.textContent = "查看 · " + record.snapshot.targetDeg + "°";
+    snapshotButton.textContent = record.problemId === 4 ? "查看 · 制动 PD" : record.problemId === 3
+      ? "查看 · " + record.snapshot.lineLengthMm / 10 + " cm · " + record.snapshot.directionDeg + "°"
+      : "查看 · " + record.snapshot.targetDeg + "°";
     snapshotButton.addEventListener("click", () => snapshot(record));
     parameters.append(snapshotButton);
     const actions = row.insertCell();
@@ -543,6 +733,24 @@ function renderCycles(cycles, isRunning) {
 function drawTrajectory(force = false) {
   const record = trajectoryRecord;
   if (!record || byId("records").hidden) return;
+  const problemId = record.problemId ?? record.snapshot.problemId ?? 1;
+  byId("trial-brake").hidden = problemId !== 4;
+  if (problemId === 4) {
+    byId("trial-trajectory").hidden = true;
+    if (trajectory?.record === record && trajectory.read === record.rows.length && !force) return;
+    const points = record.rows.map(line => parseTelemetry(line)).filter(Boolean);
+    for (const point of points) point.t = ((point.time - points[0].time) >>> 0) / 1000;
+    const result = record.endReason === 9 ? " · " + (record.endRunMs / 1000).toFixed(2) + " s" : "";
+    byId("brake-result").textContent = trialLabel(record.id, 4) + " · " + record.status + result;
+    const end = Math.max(1, points.at(-1)?.t ?? 0);
+    const maxGap = 1.5 * record.snapshot.telemetryMs / 1000;
+    chart(byId("chart-brake-angle"), [{ points, value: "angle", color: measuredColor }],
+      { end, min: 0, max: 50, maxGap });
+    chart(byId("chart-brake-rate"), [{ points, value: "rate", color: measuredColor }],
+      { end, min: 0, max: 240, maxGap });
+    trajectory = { record, read: record.rows.length };
+    return;
+  }
   if (trajectory?.record !== record) {
     trajectory = {
       record, read: 0, points: [], cycles: [],
@@ -552,34 +760,40 @@ function drawTrajectory(force = false) {
   }
   if (!force && trajectory.read === record.rows.length) return;
 
-  const heightCm = (record.snapshot.pivotM ?? 0.99) * 100;
+  const snapshot = { ...record.snapshot, problemId };
   for (; trajectory.read < record.rows.length; trajectory.read++) {
-    const row = parseTelemetry(record.rows[trajectory.read]);
-    if (row?.state !== 1 || row.problem !== 1 || Math.abs(row.angle) >= 90 || Math.abs(row.roll) >= 90) continue;
-    const roll = row.roll / degreesPerRadian;
-    const x = heightCm * Math.tan(row.angle / degreesPerRadian) / Math.cos(roll);
-    const y = heightCm * Math.tan(roll);
-    const point = { x, y, t: row.runTime / 1000, pitch: row.angle, rate: row.rate };
+    const row = parseTelemetry(record.rows[trajectory.read], snapshot.directionDeg);
+    if (row?.problem !== problemId) continue;
+    const point = projectTrialPoint(row, snapshot);
+    if (!point) continue;
     updateCycles(trajectory, point);
     trajectory.points.push(point);
-    trajectory.xExtent = Math.max(trajectory.xExtent, Math.abs(x));
-    trajectory.yExtent = Math.max(trajectory.yExtent, Math.abs(y));
+    trajectory.xExtent = Math.max(trajectory.xExtent, Math.abs(point.x));
+    trajectory.yExtent = Math.max(trajectory.yExtent, Math.abs(point.y));
   }
 
   const { points, cycles, xExtent, yExtent } = trajectory;
   byId("trial-trajectory").hidden = false;
-  byId("trajectory-trial").textContent = trialLabel(record.id) + (record === active ? " · 采集中" : "");
+  byId("trajectory-trial").textContent = trialLabel(record.id, record.problemId) +
+    (record === active ? " · 采集中" : "");
   byId("trajectory-empty").hidden = points.length > 0;
   byId("trajectory-layout").hidden = points.length === 0;
   if (!points.length) return;
 
-  const targetHalfSpan = heightCm * Math.tan(record.snapshot.targetDeg / degreesPerRadian);
+  const targetHalfSpan = targetHalfSpanCm(snapshot);
+  const maxGap = Math.max(0.15, (snapshot.telemetryMs ?? 20) * 1.5 / 1000);
+  byId("trajectory-cross-label").textContent = problemId === 3
+    ? "↑ 垂直方向偏移（cm）" : "↑ 上下偏移（cm）";
+  byId("trajectory-along-label").textContent = problemId === 3
+    ? "设定方向位移（cm）→" : "左右位移（cm）→";
+  byId("displacement-label").textContent = problemId === 3
+    ? "↑ 设定方向位移（cm）" : "↑ 左右摆动位移（cm）";
   const xLimit = Math.ceil(Math.max(4, targetHalfSpan, xExtent) / 4) * 4;
   const yLimit = Math.ceil(Math.max(1, yExtent));
   chart(byId("chart-trajectory"), [{ points, value: "y", color: measuredColor }],
-    { start: -xLimit, end: xLimit, min: -yLimit, max: yLimit, positionPlot: true, zeroLine: true });
+    { start: -xLimit, end: xLimit, min: -yLimit, max: yLimit, positionPlot: true, zeroLine: true, maxGap });
   chart(byId("chart-displacement"), [{ points, value: "x", color: measuredColor }],
-    { end: Math.max(1, points.at(-1).t), min: -xLimit, max: xLimit, zeroLine: true });
+    { end: Math.max(1, points.at(-1).t), min: -xLimit, max: xLimit, zeroLine: true, maxGap });
   renderCycles(cycles, record === active);
 }
 
@@ -588,7 +802,8 @@ const limits = { angle: [-20, 20], rate: [-80, 80], amplitude: [0, 20], pwm: [0,
 function updateComparison() {
   comparison = [...selected].map(id => {
     const record = history.get(id);
-    const points = record.rows.map(parseTelemetry).filter(row => row?.state === 1)
+    const points = record.rows.map(line => parseTelemetry(line, record.snapshot.directionDeg))
+      .filter(row => row?.state === 1 && (record.problemId !== 4 || row.phase !== 0))
       .map(row => ({ ...row, t: row.runTime / 1000 }));
     return { record, points };
   });
@@ -599,7 +814,10 @@ function updateComparison() {
     const label = document.createElement("span");
     const dot = document.createElement("i");
     dot.className = index ? "trace-secondary" : "trace-measured";
-    label.append(dot, trialLabel(record.id) + " " + record.snapshot.targetDeg + "° ");
+    const value = record.problemId === 4 ? "制动" : record.problemId === 3
+      ? record.snapshot.lineLengthMm / 10 + " cm · " + record.snapshot.directionDeg + "°"
+      : record.snapshot.targetDeg + "°";
+    label.append(dot, trialLabel(record.id, record.problemId) + " " + value + " ");
     labels.append(label);
   });
   drawComparison();
@@ -608,43 +826,61 @@ function updateComparison() {
 function drawComparison() {
   if (!comparison.length) return;
   const metric = byId("compare-metric").value;
-  const [min, max] = metric === "pwm" ? [-100, 100] : limits[metric];
+  const hasBrake = comparison.some(({ record }) => record.problemId === 4);
+  const [min, max] = metric === "pwm" ? [-100, 100] :
+    hasBrake && metric === "angle" ? [-20, 50] : hasBrake && metric === "rate" ? [-80, 240] : limits[metric];
   const end = Math.max(1, ...comparison.map(({ points }) => points.at(-1)?.t ?? 0));
-  chart(byId("chart-compare"), comparison.map(({ points }, index) =>
-    ({ points, value: metric, color: index ? secondaryColor : measuredColor })), { end, min, max });
+  chart(byId("chart-compare"), comparison.map(({ points, record }, index) =>
+    ({ points, value: metric, color: index ? secondaryColor : measuredColor,
+      maxGap: Math.max(0.15, (record.snapshot.telemetryMs ?? 20) * 1.5 / 1000) })),
+    { end, min, max });
 }
 
 function drawLive() {
   const row = live.at(-1);
+  const q4 = selectedProblem === 4 || row?.problem === 4;
   const end = Math.max(12, row?.t ?? 0);
   const start = end - 12;
   const visible = live.filter(point => point.t >= start - .1);
-  const draw = (metric, first, second, color, dashed) => {
-    const [min, max] = limits[metric];
-    chart(byId("chart-" + metric), [
-      { points: visible, value: first, color: measuredColor },
-      { points: visible, value: second, color, dashed },
-    ], { start, end, min, max });
+  const draw = (metric, traces, [min, max] = limits[metric]) => {
+    chart(byId("chart-" + metric), traces.map(([value, color, dashed]) =>
+      ({ points: visible, value, color, dashed })),
+    { start, end, min, max, maxGap: telemetryAgeLimit(1.5, 150) / 1000 });
   };
-  draw("angle", "angle", "targetAngle", referenceColor, true);
-  draw("rate", "rate", "targetRate", referenceColor, true);
-  draw("amplitude", "amplitude", "targetAmplitude", referenceColor, true);
-  draw("pwm", "pwm1", "pwm2", secondaryColor, false);
-  byId("angle").textContent = row ? row.angle.toFixed(2) + " °" : "—";
-  byId("rate").textContent = row ? row.rate.toFixed(1) + " °/s" : "—";
-  byId("amplitude").textContent = Number.isFinite(row?.amplitude) ? row.amplitude.toFixed(2) + " °" : "—";
-  byId("pwm").textContent = row ? row.pwm1.toFixed(1) + " / " + row.pwm2.toFixed(1) + " %" : "—";
+  const q3 = row?.projected ?? (selectedProblem === 3 && !row);
+  byId("angle-title").textContent = q4 ? "倾角" : q3 ? "沿线角度" : "Pitch 角度";
+  byId("rate-title").textContent = q4 ? "合成角速度" : q3 ? "沿线角速度" : "Pitch 角速度";
+  byId("amplitude-title").textContent = q4 ? "双轴角速度" : "估算幅值";
+  byId("amplitude-legend").hidden = q4;
+  byId("axis-rate-legend").hidden = !q4;
+  byId("vertical-pwm-legend").hidden = !q4;
+  draw("angle", q4 ? [["tilt", measuredColor]] :
+    [["angle", measuredColor], ["targetAngle", referenceColor, true]], q4 ? [0, 50] : undefined);
+  draw("rate", q4 ? [["speed", measuredColor]] :
+    [["rate", measuredColor], ["targetRate", referenceColor, true]], q4 ? [0, 240] : undefined);
+  draw("amplitude", q4 ? [["rollRateDps", measuredColor], ["pitchRateDps", secondaryColor]] :
+    [["amplitude", measuredColor], ["targetAmplitude", referenceColor, true]], q4 ? [-240, 240] : undefined);
+  const pwmTraces = [["pwm1", measuredColor], ["pwm2", secondaryColor]];
+  if (q4) pwmTraces.push(["pwm3", "#89cf87"], ["pwm4", "#f0a55e"]);
+  draw("pwm", pwmTraces);
+  byId("angle").textContent = row ? (q4 ? row.tilt : row.angle).toFixed(2) + " °" : "—";
+  byId("rate").textContent = row ? (q4 ? row.speed : row.rate).toFixed(1) + " °/s" : "—";
+  byId("amplitude").textContent = q4 && row ? row.rollRateDps.toFixed(1) + " / " +
+    row.pitchRateDps.toFixed(1) + " °/s" : Number.isFinite(row?.amplitude) ? row.amplitude.toFixed(2) + " °" : "—";
+  byId("pwm").textContent = row ? row.pwm1.toFixed(1) + " / " + row.pwm2.toFixed(1) + " %" +
+    (row.problem === 3 || q4 ? " · PWM3/4 " + row.pwm3.toFixed(1) + " / " + row.pwm4.toFixed(1) + " %" : "") : "—";
   const displayedRecord = active ?? (shownId
-    ? [...history.values()].find(record => trialLabel(record.id) === shownId) : undefined);
-  const runtimeLimit = displayedRecord?.snapshot.durationMs;
+    ? [...history.values()].find(record => trialLabel(record.id, record.problemId) === shownId) : undefined);
+  const runtimeLimit = row?.state === 1 ? displayedRecord?.snapshot.durationMs : undefined;
   const configuredSeconds = runtimeLimit === undefined ? undefined : runtimeLimit / 1000;
   const durationLabel = configuredSeconds === undefined ? "" : Number.isInteger(configuredSeconds)
     ? configuredSeconds.toFixed(0) : configuredSeconds.toFixed(1);
   byId("elapsed").textContent = row
     ? (row.runTime / 1000).toFixed(2) + (durationLabel ? " / " + durationLabel : "") + " s"
     : "—";
-  byId("phase").textContent = row?.state === 1 && row.problem === 1
-    ? phases[row.phase] ?? "Q1" : row ? states[row.state] : "等待遥测";
+  const showPhase = row?.state === 1 && (row.problem === 1 || row.problem === 3);
+  byId("phase").textContent = row?.problem === 4 && row.state === 1 ? brakePhases[row.phase] :
+    showPhase ? phases[row.phase] ?? states[row.state] : row ? states[row.state] : "等待遥测";
 }
 
 setInterval(() => {
@@ -697,6 +933,7 @@ window.addEventListener("hashchange", () => {
   updateNavigation();
   window.scrollTo(0, 0);
 });
+setSelectedProblem(selectedProblem, false);
 updateNavigation();
 updateSpanLimits();
 updateTargetAngle();

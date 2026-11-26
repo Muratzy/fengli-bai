@@ -111,7 +111,13 @@ h3 { font-size: .87rem; }
   padding-inline: clamp(1.25rem, 3vw, 3.25rem);
   border-bottom: 1px solid var(--line);
 }
+.top-identity { min-width: 0; display: flex; align-items: center; gap: 1.1rem; }
+.heading { flex: none; }
 .top p { margin-top: .35rem; color: var(--muted); font-size: .83rem; }
+.problem-switcher { display: grid; grid-template-columns: 3.7rem 4.55rem repeat(5, 2.35rem); gap: .12rem; }
+.problem-switcher button { min-width: 0; padding: .45rem .18rem; border-radius: .25rem; font-size: .76rem; }
+.problem-switcher button[data-problem="2"] { padding-inline: .06rem; font-size: .67rem; }
+.problem-switcher button[aria-pressed="true"] { border-color: #d8a695; background: var(--accent-soft); color: var(--accent); }
 .connection-tools { display: flex; align-items: end; justify-content: flex-end; gap: .7rem; flex-wrap: wrap; }
 .transport-mode { display: grid; gap: .2rem; min-width: 8.7rem; color: var(--muted); font-size: .72rem; }
 .transport-mode select { width: 100%; padding: .36rem .48rem; font-size: .78rem; }
@@ -150,6 +156,11 @@ main {
   scroll-margin-top: .85rem;
 }
 .setup[hidden] { display: none; }
+.problem-fields { display: contents; }
+.problem-fields[hidden] { display: none; }
+.problem-note { grid-column: 1 / -1; margin-top: .45rem; line-height: 1.55; }
+.unsupported-fields { display: grid; align-content: start; gap: .5rem; padding: .65rem; color: var(--muted); }
+.unsupported-fields h3 { color: var(--ink); font-size: .95rem; }
 main[data-view="tuning"] .setup,main[data-view="experiment"] .setup { grid-template-columns: 1fr; }
 main[data-view="tuning"] .setup { max-width: 60rem; }
 main[data-view="experiment"] .setup { max-width: 43rem; }
@@ -205,6 +216,7 @@ button.danger:enabled:hover { background: #f7e4da; }
 button:disabled { opacity: .48; cursor: default; }
 button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .duration-setting { display: flex; flex-wrap: wrap; align-items: end; gap: .48rem .75rem; margin-top: .85rem; }
+.duration-setting[hidden] { display: none; }
 .duration-setting input { max-width: 7rem; }
 .duration-setting .muted { padding-bottom: .4rem; }
 .actions { display: flex; flex-wrap: wrap; gap: .44rem; margin-top: .95rem; }
@@ -273,8 +285,14 @@ dialog dl dd { margin: 0; font: .86rem ui-monospace, monospace; }
   :root { --rail-width: 11.5rem; }
   #parameters { grid-template-columns: 1fr 1.3fr; }
   fieldset:last-child { grid-column: 1 / -1; grid-template-columns: 1fr 1.3fr; align-items: center; }
+  .top { gap: .65rem; padding-inline: 1.15rem; }
+  .top-identity { gap: .65rem; }
+  .problem-switcher { grid-template-columns: 3.25rem 4.2rem repeat(5, 1.95rem); }
 }
 @media (max-width: 1010px) {
+  .top { height: auto; min-height: 5.25rem; flex-wrap: wrap; padding-block: .65rem; }
+  .top-identity { flex-wrap: wrap; }
+  .connection-tools { margin-left: auto; }
   .setup { grid-template-columns: 1fr; }
   #parameters { grid-template-columns: 1fr 1.35fr 1fr; }
   fieldset:last-child { grid-column: auto; grid-template-columns: 1fr; }
@@ -286,6 +304,8 @@ dialog dl dd { margin: 0; font: .86rem ui-monospace, monospace; }
 @media (max-width: 730px) {
   body { display: flex; flex-direction: column; }
   .top { order: -1; height: auto; min-height: 4.2rem; padding-block: .75rem; padding-left: 3.75rem; }
+  .top-identity { display: grid; gap: .55rem; }
+  .problem-switcher { grid-template-columns: 3.2rem 4.1rem repeat(5, 1.9rem); }
   .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .brand { position: absolute; top: 0; left: 0; height: 4.2rem; border: 0; padding: 0 .85rem; }
   .brand-name,.serial-spec { display: none; }
@@ -297,8 +317,14 @@ dialog dl dd { margin: 0; font: .86rem ui-monospace, monospace; }
   .setup { gap: .85rem; }
 }
 @media (max-width: 490px) {
-  .top { padding-right: .85rem; }
+  .top { align-items: flex-start; gap: .45rem; padding-right: .65rem; }
+  .heading h1 { font-size: 1.42rem; }
+  .heading p { font-size: .7rem; }
+  .top-identity { min-width: 0; flex: 1; }
+  .problem-switcher { grid-template-columns: 2.9rem 3.9rem repeat(5, minmax(1.55rem, 1fr)); gap: .08rem; }
+  .problem-switcher button { padding-inline: .08rem; font-size: .7rem; }
   .connection-tools { align-items: stretch; gap: .4rem; }
+  .connection-tools .connection { display: none; }
   .transport-mode { min-width: 7.6rem; }
   .trajectory canvas { height: 165px; }
   main { padding-inline: .65rem; }

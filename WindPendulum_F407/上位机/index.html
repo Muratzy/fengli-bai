@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>风力摆 · Q1 实验台</title>
+  <title>风力摆 · Q1/Q2 实验台</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,10 +19,21 @@
       <a href="#monitor"><span class="nav-icon monitor-icon" aria-hidden="true"></span>实时监控</a>
       <a href="#records"><span class="nav-icon archive" aria-hidden="true"></span>实验记录</a>
     </nav>
-    <div class="serial-spec"><span>J-Link VCOM</span><small>115200 · 8-N-1</small></div>
+    <div class="serial-spec"><span id="serial-summary">J-Link VCOM</span><small id="serial-settings">115200 · 8-N-1</small></div>
   </aside>
   <header class="top">
-    <div><h1>Q1 实验台</h1><p>STM32F407 风力摆控制</p></div>
+    <div class="top-identity">
+      <div class="heading"><h1 id="page-title">Q1/Q2 实验台</h1><p>STM32F407 风力摆控制</p></div>
+      <nav id="problem-switcher" class="problem-switcher" aria-label="题目入口">
+        <button type="button" data-problem="1" aria-pressed="true">Q1/Q2</button>
+        <button type="button" data-problem="2" aria-pressed="false" aria-disabled="true" disabled>Q2（弃用）</button>
+        <button type="button" data-problem="3" aria-pressed="false">Q3</button>
+        <button type="button" data-problem="4" aria-pressed="false">Q4</button>
+        <button type="button" data-problem="5" aria-pressed="false">Q5</button>
+        <button type="button" data-problem="6" aria-pressed="false">Q6</button>
+        <button type="button" data-problem="7" aria-pressed="false">Q7</button>
+      </nav>
+    </div>
     <div class="connection-tools">
       <label class="transport-mode">连接方式
         <select id="connection-mode" aria-label="连接方式">
@@ -38,6 +49,7 @@
       <section class="panel" id="tuning">
         <h2>参数设置</h2>
         <form id="parameters">
+          <div class="problem-fields" data-problem-fields="1">
           <fieldset>
             <legend>启动 PD</legend>
             <label>Kp<input name="startupKp" type="number" min="0" max="100" step="0.001" value="28" required></label>
@@ -55,17 +67,51 @@
             <label>投影总跨度 (cm)<input name="targetSpanCm" type="number" inputmode="decimal" step="0.01" value="60" aria-describedby="target-angle" required></label>
             <p class="muted" id="target-angle"></p>
           </fieldset>
+          </div>
+          <div class="problem-fields" data-problem-fields="3" hidden>
+            <fieldset>
+              <legend>Q3 直线参数</legend>
+              <label>总长度 (cm)<input name="q3LineLengthCm" type="number" min="20" max="60" step="1" value="25" required></label>
+              <label>方向角 (°)<input name="q3DirectionDeg" type="number" min="0" max="350" step="10" value="0" required></label>
+              <p id="q3-direction-hint" class="muted">上 0° · 右 90° · 下 180° · 左 270°</p>
+            </fieldset>
+            <fieldset>
+              <legend>沿线起摆 PD</legend>
+              <label>Kp<input name="q3StartupKp" type="number" min="0" max="100" step="0.001" value="28" required></label>
+              <label>Kd<input name="q3StartupKd" type="number" min="0" max="50" step="0.001" value="7" required></label>
+            </fieldset>
+            <fieldset>
+              <legend>沿线幅值 PID</legend>
+              <label>Kp<input name="q3AmplitudeKp" type="number" min="0" max="10" step="0.001" value="2" required></label>
+              <label>Ki<input name="q3AmplitudeKi" type="number" min="0" max="5" step="0.001" value="0" required></label>
+              <label>Kd<input name="q3AmplitudeKd" type="number" min="0" max="2" step="0.001" value="0" required></label>
+              <label>阻尼补偿<input name="q3Compensation" type="number" min="0" max="5" step="0.001" value="0.5" required></label>
+            </fieldset>
+          </div>
+          <div class="problem-fields" data-problem-fields="4" hidden>
+            <h3>Q4 制动</h3><p id="q4-pd">连接后读取板端制动参数。</p>
+          </div>
+          <div class="problem-fields unsupported-fields" data-problem-fields="5" hidden>
+            <h3>Q5 圆周轨迹</h3><p>题目入口已预留，控制器尚未接入。</p>
+          </div>
+          <div class="problem-fields unsupported-fields" data-problem-fields="6" hidden>
+            <h3>Q6 抗风扰</h3><p>题目入口已预留，控制器尚未接入。</p>
+          </div>
+          <div class="problem-fields unsupported-fields" data-problem-fields="7" hidden>
+            <h3>Q7 扩展题目</h3><p>题目入口已预留，需求尚未定义。</p>
+          </div>
         </form>
       </section>
       <section class="panel control" id="experiment">
         <h2>实验控制</h2>
-        <div class="duration-setting">
+        <div class="duration-setting" id="q1-duration-setting">
           <label>运行时长（秒）
             <input name="durationSeconds" form="parameters" type="number" min="5" max="60"
                    step="0.1" value="25" required aria-describedby="duration-hint">
           </label>
           <span class="muted" id="duration-hint">5–60 秒，由 STM32 到时自动停止</span>
         </div>
+        <p id="problem-control-note" class="problem-note muted" hidden></p>
         <div class="actions">
           <button id="connect">连接串口</button>
           <button id="start" class="primary" disabled>下发并启动</button>
@@ -83,10 +129,10 @@
     <section class="panel monitor" id="monitor">
       <div class="section-head"><h2>实时监控</h2><span class="phase" id="phase">等待遥测</span></div>
       <div id="charts" class="charts">
-        <article><header><h3>Pitch 角度</h3><output id="angle">—</output></header><canvas id="chart-angle" aria-label="实时 Pitch 角度曲线"></canvas><small><i class="trace-measured"></i>实测 <i class="trace-reference"></i>正弦参考</small></article>
-        <article><header><h3>Pitch 角速度</h3><output id="rate">—</output></header><canvas id="chart-rate" aria-label="实时 Pitch 角速度曲线"></canvas><small><i class="trace-measured"></i>实测 <i class="trace-reference"></i>正弦参考</small></article>
-        <article><header><h3>估算幅值</h3><output id="amplitude">—</output></header><canvas id="chart-amplitude" aria-label="实时幅值曲线"></canvas><small><i class="trace-measured"></i>估算 <i class="trace-reference"></i>目标</small></article>
-        <article><header><h3>实际 PWM</h3><output id="pwm">—</output></header><canvas id="chart-pwm" aria-label="左右实际 PWM 曲线"></canvas><small><i class="trace-measured"></i>PWM1 右 <i class="trace-secondary"></i>PWM2 左</small></article>
+        <article><header><h3 id="angle-title">Pitch 角度</h3><output id="angle">—</output></header><canvas id="chart-angle" aria-label="实时摆动角度曲线"></canvas><small><i class="trace-measured"></i>实测 <i class="trace-reference"></i>目标参考</small></article>
+        <article><header><h3 id="rate-title">Pitch 角速度</h3><output id="rate">—</output></header><canvas id="chart-rate" aria-label="实时摆动角速度曲线"></canvas><small><i class="trace-measured"></i>实测 <i class="trace-reference"></i>目标参考</small></article>
+        <article><header><h3 id="amplitude-title">估算幅值</h3><output id="amplitude">—</output></header><canvas id="chart-amplitude" aria-label="实时幅值或双轴角速度曲线"></canvas><small id="amplitude-legend"><i class="trace-measured"></i>估算 <i class="trace-reference"></i>目标</small><small id="axis-rate-legend" hidden><i class="trace-measured"></i>Roll <i class="trace-secondary"></i>Pitch</small></article>
+        <article><header><h3>实际 PWM</h3><output id="pwm">—</output></header><canvas id="chart-pwm" aria-label="实际 PWM 曲线"></canvas><small><i class="trace-measured"></i>PWM1 右 <i class="trace-secondary"></i>PWM2 左 <span id="vertical-pwm-legend" hidden>· 绿 PWM3 下 · 橙 PWM4 上</span></small></article>
       </div>
     </section>
     <section class="panel history" id="records">
@@ -97,13 +143,13 @@
         <p id="trajectory-empty" class="muted">暂无运行态遥测。</p>
         <div id="trajectory-layout" class="trajectory-layout" hidden>
           <div class="trajectory-plot">
-            <div class="muted">↑ 上下偏移（cm）</div>
+            <div id="trajectory-cross-label" class="muted">↑ 上下偏移（cm）</div>
             <canvas id="chart-trajectory" aria-label="实测姿态估算的地面轨迹，横轴为左右位移，纵轴为上下偏移"></canvas>
-            <div class="trajectory-axis muted">左右位移（cm）→</div>
+            <div id="trajectory-along-label" class="trajectory-axis muted">左右位移（cm）→</div>
             <small><i class="trace-measured"></i>IMU 投影 <i class="trace-reference"></i>中心线</small>
           </div>
           <div class="trajectory-plot">
-            <div class="muted">↑ 左右摆动位移（cm）</div>
+            <div id="displacement-label" class="muted">↑ 左右摆动位移（cm）</div>
             <canvas id="chart-displacement" aria-label="左右摆动位移随时间变化，零线为静止中心"></canvas>
             <div class="trajectory-axis muted">运行时间（s）→</div>
             <h4>最近三个完整周期的摆幅</h4>
@@ -111,6 +157,14 @@
             <ol id="cycle-values" class="cycle-values"></ol>
           </div>
         </div>
+      </div>
+      <div id="trial-brake" class="compare trajectory" hidden>
+        <div class="section-head"><h3>本轮制动曲线</h3><span class="muted" id="brake-result"></span></div>
+        <div class="trajectory-layout">
+          <div class="trajectory-plot"><small>↑ 倾角（°）</small><canvas id="chart-brake-angle" aria-label="本轮制动倾角曲线"></canvas></div>
+          <div class="trajectory-plot"><small>↑ 合成角速度（°/s）</small><canvas id="chart-brake-rate" aria-label="本轮制动合成角速度曲线"></canvas></div>
+        </div>
+        <small>横轴为首条实验遥测之后的时间（秒）。</small>
       </div>
       <div class="table-wrap">
         <table><thead><tr><th scope="col">对比</th><th scope="col">编号</th><th scope="col">启动时间</th><th scope="col">状态</th><th scope="col">参数快照</th><th scope="col">数据</th></tr></thead>

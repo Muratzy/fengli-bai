@@ -39,9 +39,23 @@ export const snapshotFields = [
   ["centerTurnRate", "端点换向速度阈值 (°/s)", 1000],
   ["minDurationMs", "最短运行时长 (ms)", 1],
   ["maxDurationMs", "最长运行时长 (ms)", 1],
+  ["problemId", "题目编号", 1], ["directionDeg", "设定方向 (°)", 1],
+  ["lineLengthMm", "Q3 目标总长 (mm)", 1],
 ];
 
-const actions = ["INFO", "START", "STOP", "RESET"];
+export const q4SnapshotFields = [
+  ["problemId", "题目编号", 1], ["directionSign", "Roll 推力映射", 1],
+  ["armTimeoutMs", "预备超时 (ms)", 1], ["durationMs", "制动时限 (ms)", 1],
+  ["releaseMinDeg", "释放最小倾角 (°)", 1], ["releaseMaxDeg", "释放最大倾角 (°)", 1],
+  ["holdMs", "释放前静止时间 (ms)", 1], ["releaseRate", "向中心释放角速度 (°/s)", 1000],
+  ["settleAngle", "停稳倾角 (°)", 1], ["settleRate", "停稳合成角速度 (°/s)", 1],
+  ["settleMs", "停稳持续时间 (ms)", 1], ["stopAngle", "保护倾角 (°)", 1000],
+  ["stopRate", "保护合成角速度 (°/s)", 1000], ["brakeKp", "制动 PD Kp", 1000],
+  ["brakeKd", "制动 PD Kd", 1000], ["pwmPercent", "总 PWM 上限 (%)", 10],
+  ["rateFilterMs", "D 项滤波常数 (ms)", 1], ["telemetryMs", "遥测发送间隔 (ms)", 1],
+];
+
+const actions = ["INFO", "START", "STOP", "RESET", "Q3INFO", "Q4INFO", "Q4ARM"];
 
 function crc16(payload) {
   let crc = 0xffff;
@@ -53,9 +67,12 @@ function crc16(payload) {
   return crc.toString(16).padStart(4, "0").toUpperCase();
 }
 
-export function commandFrame(id, action, tuning) {
+export function commandFrame(id, action, tuning, problem = null) {
   const params = action === "START" ? tuningKeys.map(key => Math.round(tuning[key] * 1000)) : [];
   if (action === "START" && tuning.durationMs !== undefined) params.push(tuning.durationMs);
+  if (action === "START" && problem?.id === 3) {
+    params.push(3, problem.directionDeg, problem.lineLengthMm);
+  }
   const payload = ["!WP1", id, action, ...params].join(",");
   return payload + "*" + crc16(payload) + "\n";
 }
@@ -68,16 +85,34 @@ export function parseReply(line) {
   if (status === "ERR" && params.length === 1)
     return { id: Number(id), action, error: params[0] };
   if (status !== "OK") return null;
+  if (action === "Q3INFO") {
+    if (params.length !== 6 || params.some(value => !/^-?\d+$/.test(value))) return null;
+    const [problem, directionSign, minLengthMm, maxLengthMm, durationMs, directionStepDeg] =
+      params.map(Number);
+    if (problem !== 3 || ![-1, 0, 1].includes(directionSign) || minLengthMm <= 0 ||
+        maxLengthMm < minLengthMm || durationMs <= 0 || directionStepDeg <= 0) return null;
+    return { id: Number(id), action, q3Info: {
+      directionSign, minLengthMm, maxLengthMm, durationMs, directionStepDeg,
+    } };
+  }
   let snapshot;
-  if (action === "INFO" || action === "START") {
-    if (![28, 32, snapshotFields.length].includes(params.length) ||
+  if (action === "Q4INFO" || action === "Q4ARM") {
+    if (params.length !== q4SnapshotFields.length || params.some((value, i) => i === 1
+      ? !/^-?\d+$/.test(value) || ![-1, 0, 1].includes(Number(value))
+      : !/^\d+$/.test(value) || Number(value) > 0xffffffff)) return null;
+    snapshot = Object.fromEntries(q4SnapshotFields.map(([key, , scale], i) => [key, Number(params[i]) / scale]));
+    if (snapshot.problemId !== 4 || snapshot.durationMs <= 0 || snapshot.armTimeoutMs <= 0 ||
+        snapshot.releaseMinDeg <= 0 || snapshot.releaseMaxDeg < snapshot.releaseMinDeg ||
+        snapshot.settleMs > snapshot.durationMs || snapshot.telemetryMs <= 0) return null;
+  } else if (action === "INFO" || action === "START") {
+    if (![28, 32, snapshotFields.length - 3, snapshotFields.length].includes(params.length) ||
         params.some(value => !/^\d+$/.test(value) || Number(value) > 0xffffffff)) return null;
     snapshot = Object.fromEntries(snapshotFields.slice(0, params.length).map(([key, , scale], i) => [key, Number(params[i]) / scale]));
   } else if (params.length) return null;
   return { id: Number(id), action, snapshot };
 }
 
-export function parseTelemetry(line) {
+export function parseTelemetry(line, directionDeg = null) {
   const values = line.split(",");
   if (![59, 67, 68, fields.length].includes(values.length) || values.some(value => !/^-?\d{1,10}$/.test(value))) return null;
   const data = values.map(Number);
@@ -90,19 +125,57 @@ export function parseTelemetry(line) {
   const trialId = get("q1_vcom_trial_id") ?? 0;
   const pwm1 = get("pwm1_applied_permille") / 10;
   const pwm2 = get("pwm2_applied_permille") / 10;
-  if (time < 0 || time > 0xffffffff || state < 0 || state > 4 || reason < 0 || reason > 8 ||
-      runTime < 0 || runTime > 0xffffffff || problem < 0 || problem > 2 ||
-      trialId < 0 || trialId > 0xffffffff || pwm1 < 0 || pwm1 > 100 || pwm2 < 0 || pwm2 > 100) return null;
+  const pwm3 = get("pwm3_applied_permille") / 10;
+  const pwm4 = get("pwm4_applied_permille") / 10;
+  if (time < 0 || time > 0xffffffff || state < 0 || state > 4 || reason < 0 || reason > (problem === 4 ? 11 : 8) ||
+      runTime < 0 || runTime > 0xffffffff || problem < 0 || problem > 4 ||
+      trialId < 0 || trialId > 0xffffffff || pwm1 < 0 || pwm1 > 100 || pwm2 < 0 || pwm2 > 100 ||
+      pwm3 < 0 || pwm3 > 100 || pwm4 < 0 || pwm4 > 100) return null;
+  const showAmplitude = state === 1 && (problem === 1 || problem === 3) && values.length >= 67;
+  let angle = get("pitch_cdeg") / 100;
+  let rate = get("pitch_rate_cdeg_s") / 100;
+  let targetAngle = state === 1 ? get("target_pitch_cdeg") / 100 : null;
+  let targetRate = state === 1 ? get("target_pitch_rate_cdeg_s") / 100 : null;
+  const rollRateDps = get("roll_rate_cdeg_s") / 100;
+  const pitchRateDps = rate;
+  const speed = Math.hypot(rollRateDps, pitchRateDps);
+  const tilt = get("tilt_cdeg") / 100;
+  if (problem === 4) {
+    angle = tilt;
+    rate = speed;
+    targetAngle = null;
+    targetRate = null;
+  }
+  const projected = problem === 3 && Number.isFinite(directionDeg) && values.length >= fields.length;
+  if (projected) {
+    const rollRad = get("roll_cdeg") / 100 * Math.PI / 180;
+    const pitchRad = get("pitch_cdeg") / 100 * Math.PI / 180;
+    const rollRate = get("roll_rate_cdeg_s") / 100 * Math.PI / 180;
+    const pitchRate = get("pitch_rate_cdeg_s") / 100 * Math.PI / 180;
+    const direction = directionDeg * Math.PI / 180;
+    const up = Math.cos(direction);
+    const right = Math.sin(direction);
+    const x = Math.tan(pitchRad) / Math.cos(rollRad);
+    const y = Math.tan(rollRad);
+    const dx = pitchRate / (Math.cos(rollRad) * Math.cos(pitchRad) ** 2) +
+      x * y * rollRate;
+    const dy = rollRate / Math.cos(rollRad) ** 2;
+    const distance = up * y + right * x;
+    const distanceRate = up * dy + right * dx;
+    angle = Math.atan(distance) * 180 / Math.PI;
+    rate = distanceRate / (1 + distance ** 2) * 180 / Math.PI;
+    const target = get("target_position_mm") / 990;
+    targetAngle = state === 1 ? Math.atan(target) * 180 / Math.PI : null;
+    targetRate = state === 1
+      ? get("target_velocity_mm_s") / (990 * (1 + target ** 2)) * 180 / Math.PI : null;
+  }
   return {
     line, time, state, reason, runTime, problem, trialId, mode: get("mode"), en: get("en_pin"),
-    angle: get("pitch_cdeg") / 100, roll: get("roll_cdeg") / 100, rate: get("pitch_rate_cdeg_s") / 100,
-    targetAngle: state === 1 ? get("target_pitch_cdeg") / 100 : null,
-    targetRate: state === 1 ? get("target_pitch_rate_cdeg_s") / 100 : null,
-    amplitude: state === 1 && problem === 1 && values.length >= 67
-      ? get("q1_amplitude_cdeg") / 100 : null,
-    targetAmplitude: state === 1 && problem === 1 && values.length >= 67
-      ? get("q1_amplitude_target_cdeg") / 100 : null,
-    phase: get("q1_control_phase"), pwm1, pwm2, pwm: pwm1 - pwm2,
+    angle, pitch: get("pitch_cdeg") / 100, roll: get("roll_cdeg") / 100, projected,
+    rate, targetAngle, targetRate, tilt, speed, rollRateDps, pitchRateDps,
+    amplitude: showAmplitude ? get("q1_amplitude_cdeg") / 100 : null,
+    targetAmplitude: showAmplitude ? get("q1_amplitude_target_cdeg") / 100 : null,
+    phase: get("q1_control_phase"), pwm1, pwm2, pwm3, pwm4, pwm: pwm1 - pwm2,
   };
 }
 

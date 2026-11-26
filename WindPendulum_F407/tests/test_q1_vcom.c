@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint16_t TestCrc16(const char *text)
@@ -62,10 +63,77 @@ static void TestReplyFormatting(void)
   assert(parsed_crc == TestCrc16(line));
 }
 
+static void TestQ3Protocol(void)
+{
+  char frame[Q1_VCOM_LINE_SIZE] =
+      "!WP1,789,START,28000,7000,2000,0,0,500,7180,15000,3,40,250";
+  AddCrc(frame, sizeof(frame));
+  Q1Vcom_Request request = {0};
+  assert(Q1Vcom_Parse(frame, &request));
+  assert(request.action == Q1_VCOM_START && request.problem_id == PROBLEM_Q3);
+  assert(request.direction_deg == 40U && request.line_length_mm == 250U);
+  assert(request.tuning.duration_ms == 15000U);
+
+  char info[Q1_VCOM_LINE_SIZE] = "!WP1,790,Q3INFO";
+  AddCrc(info, sizeof(info));
+  assert(Q1Vcom_Parse(info, &request));
+  assert(request.action == Q1_VCOM_Q3INFO);
+  Q1Vcom_Reply reply = {.request = request};
+  const int length = Q1Vcom_FormatReply(info, sizeof(info), &reply);
+  assert(length > 0);
+  assert(strstr(info, "!WP1,790,OK,Q3INFO,3,") == info);
+  char *star = strchr(info, '*');
+  assert(star != NULL);
+  *star = '\0';
+  assert((unsigned)strtoul(star + 1, NULL, 16) == TestCrc16(info));
+
+  reply.request = (Q1Vcom_Request){.id = 789U, .action = Q1_VCOM_START,
+      .problem_id = PROBLEM_Q3, .direction_deg = 40U, .line_length_mm = 250U,
+      .tuning = {.startup_kp = 28.0F, .startup_kd = 7.0F,
+        .amplitude_kp = 2.0F, .damping_compensation = 0.5F,
+        .target_amplitude_deg = 7.18F, .duration_ms = 15000U}};
+  assert(Q1Vcom_FormatReply(info, sizeof(info), &reply) > 0);
+  assert(strstr(info, ",3,40,250*") != NULL);
+  reply.error = "MIXER";
+  assert(Q1Vcom_FormatReply(info, sizeof(info), &reply) > 0);
+  assert(strstr(info, "!WP1,789,ERR,START,MIXER*") == info);
+  assert(strstr(info, ",3,40,250") == NULL);
+}
+
+static void TestQ4Protocol(void)
+{
+  char line[Q1_VCOM_LINE_SIZE] = "!WP1,900,Q4INFO";
+  AddCrc(line, sizeof(line));
+  Q1Vcom_Request request = {0};
+  assert(Q1Vcom_Parse(line, &request));
+  assert(request.action == Q1_VCOM_Q4INFO && request.problem_id == PROBLEM_Q4);
+
+  strcpy(line, "!WP1,901,Q4ARM,1");
+  AddCrc(line, sizeof(line));
+  assert(!Q1Vcom_Parse(line, &request));
+  strcpy(line, "!WP1,901,Q4ARM");
+  AddCrc(line, sizeof(line));
+  assert(Q1Vcom_Parse(line, &request));
+  assert(request.action == Q1_VCOM_Q4ARM && request.problem_id == PROBLEM_Q4);
+  Q1Vcom_Reply reply = {.request = request, .telemetry_period_ms = 1000U};
+  assert(Q1Vcom_FormatReply(line, sizeof(line), &reply) > 0);
+  assert(strstr(line, "!WP1,901,OK,Q4ARM,4,") == line);
+  assert(strstr(line, ",20000,5000,30,45,150,8000,2,5,300,50000,240000,10000,8000,850,") != NULL);
+  assert(strstr(line, ",1000*") != NULL);
+  char *star = strchr(line, '*');
+  *star = '\0';
+  assert((unsigned)strtoul(star + 1, NULL, 16) == TestCrc16(line));
+  reply.error = "BUSY";
+  assert(Q1Vcom_FormatReply(line, sizeof(line), &reply) > 0);
+  assert(strstr(line, "!WP1,901,ERR,Q4ARM,BUSY*") == line);
+}
+
 int main(void)
 {
   TestStartParsing();
   TestReplyFormatting();
+  TestQ3Protocol();
+  TestQ4Protocol();
   puts("Q1 VCOM protocol tests passed");
   return 0;
 }
